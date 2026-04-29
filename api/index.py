@@ -4,10 +4,11 @@ from pydantic import BaseModel
 from openai import OpenAI
 from lingua import Language, LanguageDetectorBuilder
 from pathlib import Path
+from urllib.request import Request, urlopen
+from urllib.error import HTTPError, URLError
 import json
 import os
 from dotenv import load_dotenv
-from supabase import create_client, Client
 
 load_dotenv()
 
@@ -24,13 +25,55 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 MEMORY_FILE = BASE_DIR / "memory.json"
 KNOWLEDGE_BASE_FILE = BASE_DIR / "knowledge_base.json"
 
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 
-supabase: Client | None = None
 
-if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY:
-    supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+def is_supabase_configured() -> bool:
+    return bool(SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY)
+
+
+def supabase_request(method: str, path: str, payload: dict | list | None = None):
+    if not is_supabase_configured():
+        raise RuntimeError("Supabase is not configured.")
+
+    url = f"{SUPABASE_URL}/rest/v1/{path.lstrip('/')}"
+
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    data = None
+
+    if payload is not None:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers["Prefer"] = "resolution=merge-duplicates,return=representation"
+
+    request = Request(
+        url=url,
+        data=data,
+        headers=headers,
+        method=method,
+    )
+
+    try:
+        with urlopen(request, timeout=15) as response:
+            response_body = response.read().decode("utf-8")
+
+            if not response_body:
+                return None
+
+            return json.loads(response_body)
+
+    except HTTPError as e:
+        error_body = e.read().decode("utf-8")
+        raise RuntimeError(f"Supabase HTTP error {e.code}: {error_body}") from e
+
+    except URLError as e:
+        raise RuntimeError(f"Supabase URL error: {e}") from e
+
 
 MEMORY_FIELDS = [
     "profile",
@@ -194,19 +237,18 @@ def ensure_memory_file_exists() -> None:
 
 
 def load_user_memory() -> dict:
-    if supabase is not None:
+    if is_supabase_configured():
         try:
-            response = (
-                supabase
-                .table("user_memory")
-                .select("data")
-                .eq("id", "default")
-                .single()
-                .execute()
+            rows = supabase_request(
+                method="GET",
+                path="user_memory?id=eq.default&select=data",
             )
 
-            if response.data and "data" in response.data:
-                return normalize_memory_data(response.data["data"])
+            if isinstance(rows, list) and rows:
+                first_row = rows[0]
+
+                if isinstance(first_row, dict) and "data" in first_row:
+                    return normalize_memory_data(first_row["data"])
 
             return DEFAULT_MEMORY.copy()
 
@@ -234,18 +276,15 @@ def load_user_memory() -> dict:
 def save_user_memory(memory_data: dict) -> None:
     normalized_memory = normalize_memory_data(memory_data)
 
-    if supabase is not None:
+    if is_supabase_configured():
         try:
-            (
-                supabase
-                .table("user_memory")
-                .upsert(
-                    {
-                        "id": "default",
-                        "data": normalized_memory,
-                    }
-                )
-                .execute()
+            supabase_request(
+                method="POST",
+                path="user_memory?on_conflict=id",
+                payload={
+                    "id": "default",
+                    "data": normalized_memory,
+                },
             )
             return
 
