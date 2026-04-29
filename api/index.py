@@ -7,6 +7,7 @@ from pathlib import Path
 import json
 import os
 from dotenv import load_dotenv
+from supabase import create_client, Client
 
 load_dotenv()
 
@@ -22,6 +23,14 @@ app.add_middleware(
 BASE_DIR = Path(__file__).resolve().parent.parent
 MEMORY_FILE = BASE_DIR / "memory.json"
 KNOWLEDGE_BASE_FILE = BASE_DIR / "knowledge_base.json"
+
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+
+supabase: Client | None = None
+
+if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY:
+    supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
 MEMORY_FIELDS = [
     "profile",
@@ -174,42 +183,91 @@ def normalize_memory_data(data: dict) -> dict:
 
 
 def ensure_memory_file_exists() -> None:
-    if not MEMORY_FILE.exists():
-        MEMORY_FILE.write_text(
-            json.dumps(DEFAULT_MEMORY, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+    try:
+        if not MEMORY_FILE.exists():
+            MEMORY_FILE.write_text(
+                json.dumps(DEFAULT_MEMORY, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+    except OSError as e:
+        print(f"Could not create local memory file: {e}")
 
 
 def load_user_memory() -> dict:
-    ensure_memory_file_exists()
+    if supabase is not None:
+        try:
+            response = (
+                supabase
+                .table("user_memory")
+                .select("data")
+                .eq("id", "default")
+                .single()
+                .execute()
+            )
+
+            if response.data and "data" in response.data:
+                return normalize_memory_data(response.data["data"])
+
+            return DEFAULT_MEMORY.copy()
+
+        except Exception as e:
+            print(f"Supabase load_user_memory error: {e}")
+            return DEFAULT_MEMORY.copy()
 
     try:
+        ensure_memory_file_exists()
+
+        if not MEMORY_FILE.exists():
+            return DEFAULT_MEMORY.copy()
+
         data = json.loads(MEMORY_FILE.read_text(encoding="utf-8"))
+        return normalize_memory_data(data)
+
     except json.JSONDecodeError:
-        data = DEFAULT_MEMORY.copy()
-        MEMORY_FILE.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        return DEFAULT_MEMORY.copy()
 
-    normalized_memory = normalize_memory_data(data)
-
-    MEMORY_FILE.write_text(
-        json.dumps(normalized_memory, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
-    return normalized_memory
+    except Exception as e:
+        print(f"Local load_user_memory error: {e}")
+        return DEFAULT_MEMORY.copy()
 
 
 def save_user_memory(memory_data: dict) -> None:
     normalized_memory = normalize_memory_data(memory_data)
 
-    MEMORY_FILE.write_text(
-        json.dumps(normalized_memory, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    if supabase is not None:
+        try:
+            (
+                supabase
+                .table("user_memory")
+                .upsert(
+                    {
+                        "id": "default",
+                        "data": normalized_memory,
+                    }
+                )
+                .execute()
+            )
+            return
+
+        except Exception as e:
+            print(f"Supabase save_user_memory error: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail="Could not save user memory to database.",
+            )
+
+    try:
+        MEMORY_FILE.write_text(
+            json.dumps(normalized_memory, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    except OSError as e:
+        print(f"Local save_user_memory error: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Could not save user memory.",
+        )
 
 
 def build_memory_context(memory_data: dict) -> str | None:
@@ -1499,10 +1557,6 @@ def chat(request: ChatRequest):
 
     model_messages.extend(conversation_context)
 
-    # Ovo je najvažniji dio.
-    # Ide NAKON memorije, RAG-a i chat historyja,
-    # a PRIJE korisničke poruke.
-    # Time zaključavamo jezik odgovora.
     model_messages.append(
         {"role": "system", "content": build_final_language_guard(app_language)}
     )
