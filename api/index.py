@@ -367,13 +367,15 @@ def extract_json_from_model_output(text: str) -> dict:
     end_index = cleaned_text.rfind("}")
 
     if start_index == -1 or end_index == -1 or end_index <= start_index:
+        print(f"Memory JSON parse problem. Raw model output: {text}")
         return DEFAULT_MEMORY.copy()
 
     json_text = cleaned_text[start_index : end_index + 1]
 
     try:
         parsed = json.loads(json_text)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        print(f"Memory JSON decode error: {e}. Raw JSON text: {json_text}")
         return DEFAULT_MEMORY.copy()
 
     return normalize_memory_data(parsed)
@@ -456,9 +458,18 @@ Return only valid JSON with exactly the required keys.
     )
 
     raw_updated_memory = response.choices[0].message.content or ""
+
+    print(f"RAW UPDATED MEMORY MODEL OUTPUT: {raw_updated_memory}")
+
     parsed_memory = extract_json_from_model_output(raw_updated_memory)
 
+    print(
+        "PARSED UPDATED MEMORY:",
+        json.dumps(parsed_memory, ensure_ascii=False),
+    )
+
     if not any(value.strip() for value in parsed_memory.values()):
+        print("Parsed memory is empty. Keeping current memory.")
         return normalized_current_memory
 
     return parsed_memory
@@ -1657,9 +1668,23 @@ def chat(request: ChatRequest):
                     assistant_reply=reply,
                     app_language=app_language,
                 )
+
+                print(
+                    "UPDATED MEMORY BEFORE SAVE:",
+                    json.dumps(updated_memory, ensure_ascii=False),
+                )
+
                 save_user_memory(updated_memory)
-            except Exception:
-                pass
+
+                saved_memory_check = load_user_memory()
+
+                print(
+                    "SAVED MEMORY AFTER SAVE:",
+                    json.dumps(saved_memory_check, ensure_ascii=False),
+                )
+
+            except Exception as memory_error:
+                print(f"Memory update/save error: {memory_error}")
 
         return {
             "reply": reply,
