@@ -16,6 +16,43 @@ type ChatMessage = {
 };
 
 type AppLanguage = "Hrvatski" | "English" | "Deutsch";
+type Tone = "Smiren" | "Motivirajući" | "Direktan" | "Nježan";
+type AnswerLength = "Kratko" | "Srednje" | "Dugačko";
+type ResponseFormat =
+  | "Slobodno"
+  | "U 3 koraka"
+  | "Kratka vježba"
+  | "Pitanja za refleksiju"
+  | "Mini plan"
+  | "Jedan konkretan zadatak";
+
+const validTones: Tone[] = ["Smiren", "Motivirajući", "Direktan", "Nježan"];
+
+const validAnswerLengths: AnswerLength[] = ["Kratko", "Srednje", "Dugačko"];
+
+const validResponseFormats: ResponseFormat[] = [
+  "Slobodno",
+  "U 3 koraka",
+  "Kratka vježba",
+  "Pitanja za refleksiju",
+  "Mini plan",
+  "Jedan konkretan zadatak",
+];
+
+const validAppLanguages: AppLanguage[] = ["Hrvatski", "English", "Deutsch"];
+
+function getOrCreateGuestId() {
+  const storageKey = "mental-coach-guest-id";
+
+  let guestId = localStorage.getItem(storageKey);
+
+  if (!guestId) {
+    guestId = crypto.randomUUID();
+    localStorage.setItem(storageKey, guestId);
+  }
+
+  return guestId;
+}
 
 const translations = {
   Hrvatski: {
@@ -46,8 +83,10 @@ const translations = {
     quickExercises: "Brze mentalne vježbe",
     errorFallback: "Dogodila se greška.",
     unknownError: "Nepoznata greška.",
-    memoryCleared: "Memorija je obrisana.",
+    memoryCleared: "Memorija ovog browsera je obrisana.",
     ragSourcesLabel: "Korištena baza znanja",
+    guestMemoryNotice:
+      "Nisi prijavljen. Memorija je spremljena samo za ovaj browser. Prijava će kasnije omogućiti sigurnu memoriju na svim uređajima.",
 
     toneCalm: "Smiren",
     toneMotivating: "Motivirajući",
@@ -64,6 +103,8 @@ const translations = {
     formatReflection: "Pitanja za refleksiju",
     formatMiniPlan: "Mini plan",
     formatOneTask: "Jedan konkretan zadatak",
+
+    noReply: "Nema odgovora.",
 
     moods: [
       {
@@ -151,8 +192,10 @@ const translations = {
     quickExercises: "Quick mental exercises",
     errorFallback: "Something went wrong.",
     unknownError: "Unknown error.",
-    memoryCleared: "Memory has been cleared.",
+    memoryCleared: "This browser's memory has been cleared.",
     ragSourcesLabel: "Knowledge base used",
+    guestMemoryNotice:
+      "You are not signed in. Memory is saved only for this browser. Signing in later will allow secure memory across devices.",
 
     toneCalm: "Calm",
     toneMotivating: "Motivating",
@@ -169,6 +212,8 @@ const translations = {
     formatReflection: "Reflection questions",
     formatMiniPlan: "Mini plan",
     formatOneTask: "One concrete task",
+
+    noReply: "No reply.",
 
     moods: [
       {
@@ -245,7 +290,8 @@ const translations = {
     thinking: "Der Mentaltrainer denkt nach...",
     placeholder:
       "Z. B. Ich habe in 30 Minuten eine Präsentation und bin nervös...",
-    enterHint: "Enter sendet die Nachricht, Shift + Enter fügt eine neue Zeile hinzu.",
+    enterHint:
+      "Enter sendet die Nachricht, Shift + Enter fügt eine neue Zeile hinzu.",
     send: "Senden",
     sending: "Denke nach...",
     settingsTitle: "Einstellungen des Mentaltrainers",
@@ -256,8 +302,10 @@ const translations = {
     quickExercises: "Schnelle mentale Übungen",
     errorFallback: "Ein Fehler ist aufgetreten.",
     unknownError: "Unbekannter Fehler.",
-    memoryCleared: "Der Speicher wurde gelöscht.",
+    memoryCleared: "Der Speicher dieses Browsers wurde gelöscht.",
     ragSourcesLabel: "Verwendete Wissensbasis",
+    guestMemoryNotice:
+      "Du bist nicht angemeldet. Der Speicher wird nur für diesen Browser gespeichert. Eine spätere Anmeldung ermöglicht sicheren Speicher auf allen Geräten.",
 
     toneCalm: "Ruhig",
     toneMotivating: "Motivierend",
@@ -274,6 +322,8 @@ const translations = {
     formatReflection: "Reflexionsfragen",
     formatMiniPlan: "Mini-Plan",
     formatOneTask: "Eine konkrete Aufgabe",
+
+    noReply: "Keine Antwort.",
 
     moods: [
       {
@@ -335,6 +385,47 @@ const translations = {
   },
 };
 
+function isValidTone(value: string | null): value is Tone {
+  return value !== null && validTones.includes(value as Tone);
+}
+
+function isValidAnswerLength(value: string | null): value is AnswerLength {
+  return value !== null && validAnswerLengths.includes(value as AnswerLength);
+}
+
+function isValidResponseFormat(value: string | null): value is ResponseFormat {
+  return (
+    value !== null && validResponseFormats.includes(value as ResponseFormat)
+  );
+}
+
+function isValidAppLanguage(value: string | null): value is AppLanguage {
+  return value !== null && validAppLanguages.includes(value as AppLanguage);
+}
+
+function safeParseMessages(value: string | null): ChatMessage[] {
+  if (!value) return [];
+
+  try {
+    const parsed = JSON.parse(value);
+
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed.filter((item) => {
+      return (
+        item &&
+        typeof item === "object" &&
+        (item.role === "user" || item.role === "assistant") &&
+        typeof item.content === "string"
+      );
+    });
+  } catch {
+    return [];
+  }
+}
+
 export default function Home() {
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
@@ -345,9 +436,10 @@ export default function Home() {
 
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
-  const [tone, setTone] = useState("Smiren");
-  const [answerLength, setAnswerLength] = useState("Kratko");
-  const [responseFormat, setResponseFormat] = useState("Slobodno");
+  const [tone, setTone] = useState<Tone>("Smiren");
+  const [answerLength, setAnswerLength] = useState<AnswerLength>("Kratko");
+  const [responseFormat, setResponseFormat] =
+    useState<ResponseFormat>("Slobodno");
   const [appLanguage, setAppLanguage] = useState<AppLanguage>("Hrvatski");
 
   const t = translations[appLanguage];
@@ -358,11 +450,6 @@ export default function Home() {
 
   useEffect(() => {
     const savedMessages = localStorage.getItem("mental-coach-chat-history");
-
-    if (savedMessages) {
-      setMessages(JSON.parse(savedMessages));
-    }
-
     const savedTone = localStorage.getItem("mental-coach-tone");
     const savedAnswerLength = localStorage.getItem("mental-coach-answer-length");
     const savedResponseFormat = localStorage.getItem(
@@ -370,16 +457,30 @@ export default function Home() {
     );
     const savedAppLanguage = localStorage.getItem("mental-coach-app-language");
 
-    if (savedTone) setTone(savedTone);
-    if (savedAnswerLength) setAnswerLength(savedAnswerLength);
-    if (savedResponseFormat) setResponseFormat(savedResponseFormat);
+    setMessages(safeParseMessages(savedMessages));
 
-    if (
-      savedAppLanguage === "Hrvatski" ||
-      savedAppLanguage === "English" ||
-      savedAppLanguage === "Deutsch"
-    ) {
+    if (isValidTone(savedTone)) {
+      setTone(savedTone);
+    } else {
+      localStorage.removeItem("mental-coach-tone");
+    }
+
+    if (isValidAnswerLength(savedAnswerLength)) {
+      setAnswerLength(savedAnswerLength);
+    } else {
+      localStorage.removeItem("mental-coach-answer-length");
+    }
+
+    if (isValidResponseFormat(savedResponseFormat)) {
+      setResponseFormat(savedResponseFormat);
+    } else {
+      localStorage.removeItem("mental-coach-response-format");
+    }
+
+    if (isValidAppLanguage(savedAppLanguage)) {
       setAppLanguage(savedAppLanguage);
+    } else {
+      localStorage.removeItem("mental-coach-app-language");
     }
   }, []);
 
@@ -402,19 +503,22 @@ export default function Home() {
   }, [messages, loading]);
 
   const handleSend = async () => {
-    if (!message.trim()) return;
+    if (!message.trim() || loading) return;
+
+    const currentMessage = message.trim();
+    const guestId = getOrCreateGuestId();
+
+    console.log("FRONTEND GUEST ID:", guestId);
 
     const userMessage: ChatMessage = {
       role: "user",
-      content: message,
+      content: currentMessage,
     };
 
     setMessages((previousMessages) => [...previousMessages, userMessage]);
 
     setLoading(true);
     setError("");
-
-    const currentMessage = message;
     setMessage("");
 
     try {
@@ -430,10 +534,13 @@ export default function Home() {
           answerLength,
           responseFormat,
           appLanguage,
+          guestId,
         }),
       });
 
       const data = await res.json();
+
+      console.log("CHAT RESPONSE:", data);
 
       if (!res.ok) {
         throw new Error(data.detail || t.errorFallback);
@@ -441,7 +548,7 @@ export default function Home() {
 
       const assistantMessage: ChatMessage = {
         role: "assistant",
-        content: data.reply || "Nema odgovora.",
+        content: data.reply || t.noReply,
         ragSources: data.ragSources || [],
       };
 
@@ -467,11 +574,20 @@ export default function Home() {
     setError("");
 
     try {
-      const res = await fetch(`${apiUrl}/api/memory`, {
-        method: "DELETE",
-      });
+      const guestId = getOrCreateGuestId();
+
+      console.log("CLEARING MEMORY FOR GUEST ID:", guestId);
+
+      const res = await fetch(
+        `${apiUrl}/api/memory?guestId=${encodeURIComponent(guestId)}`,
+        {
+          method: "DELETE",
+        }
+      );
 
       const data = await res.json();
+
+      console.log("CLEAR MEMORY RESPONSE:", data);
 
       if (!res.ok) {
         throw new Error(data.detail || t.errorFallback);
@@ -657,6 +773,10 @@ export default function Home() {
               {loading ? t.sending : t.send}
             </button>
 
+            <div className="mt-3 rounded-2xl border border-yellow-400/20 bg-yellow-500/10 p-3 text-xs text-yellow-100">
+              {t.guestMemoryNotice}
+            </div>
+
             <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-3">
               <h2 className="mb-3 text-base font-semibold">
                 {t.settingsTitle}
@@ -667,7 +787,7 @@ export default function Home() {
                   {t.tone}
                   <select
                     value={tone}
-                    onChange={(e) => setTone(e.target.value)}
+                    onChange={(e) => setTone(e.target.value as Tone)}
                     className="mt-1 w-full rounded-xl border border-white/10 bg-black/50 p-2 text-sm text-white outline-none focus:border-blue-400/60"
                   >
                     <option value="Smiren">{t.toneCalm}</option>
@@ -681,7 +801,9 @@ export default function Home() {
                   {t.length}
                   <select
                     value={answerLength}
-                    onChange={(e) => setAnswerLength(e.target.value)}
+                    onChange={(e) =>
+                      setAnswerLength(e.target.value as AnswerLength)
+                    }
                     className="mt-1 w-full rounded-xl border border-white/10 bg-black/50 p-2 text-sm text-white outline-none focus:border-blue-400/60"
                   >
                     <option value="Kratko">{t.lengthShort}</option>
@@ -694,7 +816,9 @@ export default function Home() {
                   {t.format}
                   <select
                     value={responseFormat}
-                    onChange={(e) => setResponseFormat(e.target.value)}
+                    onChange={(e) =>
+                      setResponseFormat(e.target.value as ResponseFormat)
+                    }
                     className="mt-1 w-full rounded-xl border border-white/10 bg-black/50 p-2 text-sm text-white outline-none focus:border-blue-400/60"
                   >
                     <option value="Slobodno">{t.formatFree}</option>

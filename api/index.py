@@ -1,9 +1,10 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from openai import OpenAI
 from lingua import Language, LanguageDetectorBuilder
 from pathlib import Path
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 import json
@@ -26,7 +27,12 @@ MEMORY_FILE = BASE_DIR / "memory.json"
 KNOWLEDGE_BASE_FILE = BASE_DIR / "knowledge_base.json"
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+SUPABASE_SERVICE_ROLE_KEY = "".join(
+    os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").split()
+)
+AZURE_OPENAI_EMBEDDING_MODEL = os.getenv("AZURE_OPENAI_EMBEDDING_MODEL", "")
+
+RAG_SIMILARITY_THRESHOLD = 0.32
 
 
 def is_supabase_configured() -> bool:
@@ -59,7 +65,7 @@ def supabase_request(method: str, path: str, payload: dict | list | None = None)
     )
 
     try:
-        with urlopen(request, timeout=15) as response:
+        with urlopen(request, timeout=30) as response:
             response_body = response.read().decode("utf-8")
 
             if not response_body:
@@ -73,6 +79,72 @@ def supabase_request(method: str, path: str, payload: dict | list | None = None)
 
     except URLError as e:
         raise RuntimeError(f"Supabase URL error: {e}") from e
+
+
+def create_embedding(client: OpenAI, text: str) -> list[float]:
+    if not AZURE_OPENAI_EMBEDDING_MODEL:
+        raise RuntimeError("AZURE_OPENAI_EMBEDDING_MODEL not configured.")
+
+    response = client.embeddings.create(
+        model=AZURE_OPENAI_EMBEDDING_MODEL,
+        input=text,
+    )
+
+    return response.data[0].embedding
+
+
+def retrieve_relevant_rag_chunks(
+    client: OpenAI,
+    user_message: str,
+    max_entries: int = 3,
+) -> list[dict]:
+    if not is_supabase_configured():
+        return []
+
+    try:
+        query_embedding = create_embedding(client, user_message)
+
+        rows = supabase_request(
+            method="POST",
+            path="rpc/match_rag_chunks",
+            payload={
+                "query_embedding": query_embedding,
+                "match_count": max_entries,
+                "similarity_threshold": RAG_SIMILARITY_THRESHOLD,
+            },
+        )
+
+        if not isinstance(rows, list):
+            return []
+
+        relevant_chunks = []
+
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+
+            similarity = float(row.get("similarity", 0) or 0)
+
+            if similarity < RAG_SIMILARITY_THRESHOLD:
+                continue
+
+            relevant_chunks.append(
+                {
+                    "id": row.get("id", ""),
+                    "document_name": row.get("document_name", ""),
+                    "chunk_index": row.get("chunk_index", 0),
+                    "title": row.get("title", ""),
+                    "tags": row.get("tags", []),
+                    "content": row.get("content", ""),
+                    "similarity": similarity,
+                }
+            )
+
+        return relevant_chunks
+
+    except Exception as e:
+        print(f"Supabase RAG retrieval error: {e}")
+        return []
 
 
 MEMORY_FIELDS = [
@@ -94,6 +166,27 @@ DEFAULT_MEMORY = {
     "important_context": "",
     "conversation_facts": "",
 }
+
+
+def build_memory_owner_id(user_id: str | None, guest_id: str | None) -> str | None:
+    if user_id:
+        clean_user_id = "".join(
+            char for char in user_id.strip() if char.isalnum() or char in ["-", "_"]
+        )
+
+        if clean_user_id:
+            return f"user:{clean_user_id}"
+
+    if guest_id:
+        clean_guest_id = "".join(
+            char for char in guest_id.strip() if char.isalnum() or char in ["-", "_"]
+        )
+
+        if clean_guest_id:
+            return f"guest:{clean_guest_id}"
+
+    return None
+
 
 DETECTION_LANGUAGES = [
     Language.CROATIAN,
@@ -201,6 +294,11 @@ class ChatRequest(BaseModel):
     answerLength: str | None = None
     responseFormat: str | None = None
     appLanguage: str | None = None
+    guestId: str | None = None
+
+
+class MemoryRequest(BaseModel):
+    guestId: str | None = None
 
 
 def normalize_memory_data(data: dict) -> dict:
@@ -236,12 +334,19 @@ def ensure_memory_file_exists() -> None:
         print(f"Could not create local memory file: {e}")
 
 
-def load_user_memory() -> dict:
+def load_user_memory(memory_owner_id: str | None) -> dict:
+    print("LOADING MEMORY FOR OWNER:", memory_owner_id)
+
+    if not memory_owner_id:
+        return DEFAULT_MEMORY.copy()
+
     if is_supabase_configured():
         try:
+            encoded_memory_owner_id = quote(memory_owner_id, safe="")
+
             rows = supabase_request(
                 method="GET",
-                path="user_memory?id=eq.default&select=data",
+                path=f"user_memory?id=eq.{encoded_memory_owner_id}&select=data",
             )
 
             if isinstance(rows, list) and rows:
@@ -273,8 +378,14 @@ def load_user_memory() -> dict:
         return DEFAULT_MEMORY.copy()
 
 
-def save_user_memory(memory_data: dict) -> None:
+def save_user_memory(memory_owner_id: str | None, memory_data: dict) -> None:
+    if not memory_owner_id:
+        print("Skipping memory save because memory_owner_id is missing.")
+        return
+
     normalized_memory = normalize_memory_data(memory_data)
+
+    print("SAVING MEMORY FOR OWNER:", memory_owner_id)
 
     if is_supabase_configured():
         try:
@@ -282,7 +393,7 @@ def save_user_memory(memory_data: dict) -> None:
                 method="POST",
                 path="user_memory?on_conflict=id",
                 payload={
-                    "id": "default",
+                    "id": memory_owner_id,
                     "data": normalized_memory,
                 },
             )
@@ -306,6 +417,42 @@ def save_user_memory(memory_data: dict) -> None:
         raise HTTPException(
             status_code=500,
             detail="Could not save user memory.",
+        )
+
+
+def clear_user_memory(memory_owner_id: str | None) -> None:
+    print("CLEARING MEMORY FOR OWNER:", memory_owner_id)
+
+    if not memory_owner_id:
+        return
+
+    if is_supabase_configured():
+        try:
+            encoded_memory_owner_id = quote(memory_owner_id, safe="")
+
+            supabase_request(
+                method="DELETE",
+                path=f"user_memory?id=eq.{encoded_memory_owner_id}",
+            )
+            return
+
+        except Exception as e:
+            print(f"Supabase clear_user_memory error: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail="Could not clear user memory from database.",
+            )
+
+    try:
+        MEMORY_FILE.write_text(
+            json.dumps(DEFAULT_MEMORY, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except OSError as e:
+        print(f"Local clear_user_memory error: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Could not clear user memory.",
         )
 
 
@@ -531,6 +678,61 @@ def load_knowledge_base() -> list[dict]:
     return valid_entries
 
 
+def build_rag_chunks_context(chunks: list[dict]) -> str | None:
+    if not chunks:
+        return None
+
+    formatted_chunks = []
+
+    for index, chunk in enumerate(chunks, start=1):
+        title = chunk.get("title", "")
+        document_name = chunk.get("document_name", "")
+        tags = ", ".join(chunk.get("tags", []))
+        content = chunk.get("content", "")
+        similarity = chunk.get("similarity", 0)
+
+        formatted_chunks.append(
+            f"""
+RAG chunk {index}
+Document: {document_name}
+Title: {title}
+Tags: {tags}
+Similarity: {similarity}
+Content: {content}
+""".strip()
+        )
+
+    joined_chunks = "\n\n---\n\n".join(formatted_chunks)
+
+    return f"""
+RELEVANT SUPABASE RAG CONTEXT:
+
+{joined_chunks}
+
+How to use this context:
+- Use this context only if it is relevant to the user's message.
+- Do not mention Supabase, RAG, embeddings, or the database unless the user asks.
+- Do not invent information that is not supported by the context.
+- If the context is not enough, answer normally as an AI mental coach.
+- Current user message and safety rules still have priority.
+"""
+
+
+def build_rag_sources(entries: list[dict]) -> list[dict]:
+    rag_sources = []
+
+    for entry in entries:
+        rag_sources.append(
+            {
+                "id": entry.get("id", ""),
+                "title": entry.get("title", ""),
+                "tags": entry.get("tags", []),
+            }
+        )
+
+    return rag_sources
+
+
 def normalize_search_text(text: str) -> str:
     replacements = {
         "č": "c",
@@ -642,140 +844,76 @@ def tokenize_text(text: str) -> list[str]:
     return useful_words
 
 
-def score_knowledge_entry(user_message: str, entry: dict) -> int:
-    message_tokens = tokenize_text(user_message)
+def message_looks_like_coaching_topic(message: str) -> bool:
+    text = normalize_search_text(message)
 
-    if not message_tokens:
-        return 0
+    coaching_keywords = [
+        "stres",
+        "stress",
+        "nervoza",
+        "nervous",
+        "nervos",
+        "nervoes",
+        "trema",
+        "ispit",
+        "exam",
+        "prufung",
+        "prezentacija",
+        "presentation",
+        "prasentation",
+        "fokus",
+        "focus",
+        "koncentracija",
+        "concentration",
+        "motivacija",
+        "motivation",
+        "motivierung",
+        "samopouzdanje",
+        "confidence",
+        "selbstvertrauen",
+        "disanje",
+        "breathing",
+        "atmen",
+        "smirivanje",
+        "calming",
+        "calm down",
+        "beruhigung",
+        "razgovor za posao",
+        "job interview",
+        "interview",
+        "vorstellungsgesprach",
+        "rutina",
+        "routine",
+        "refleksija",
+        "reflection",
+        "navika",
+        "habit",
+        "gewohnheit",
+        "odgadanje",
+        "prokrastinacija",
+        "procrastination",
+        "aufschieben",
+        "umoran",
+        "umorna",
+        "tired",
+        "mude",
+        "mued",
+        "mentalno",
+        "mental",
+        "mindset",
+        "mir",
+        "relax",
+        "relaxation",
+        "entspannung",
+        "breathe",
+        "breathe in",
+        "udahni",
+        "izdahni",
+        "einatmen",
+        "ausatmen",
+    ]
 
-    title = normalize_search_text(entry.get("title", ""))
-    content = normalize_search_text(entry.get("content", ""))
-    tags = entry.get("tags", [])
-
-    normalized_tags = [normalize_search_text(tag) for tag in tags]
-
-    score = 0
-
-    for token in message_tokens:
-        if token in normalized_tags:
-            score += 5
-
-        if token in title:
-            score += 3
-
-        if token in content:
-            score += 1
-
-    phrase_boosts = {
-        "prezent": ["prezentacija", "trema", "javni nastup", "samopouzdanje"],
-        "ispit": ["ispit", "učenje", "stres", "fokus"],
-        "ucen": ["učenje", "ispit", "fokus", "plan"],
-        "fokus": ["fokus", "koncentracija", "distrakcije"],
-        "stres": ["stres", "smirivanje", "disanje"],
-        "nervoz": ["nervoza", "smirivanje", "disanje"],
-        "trem": ["trema", "prezentacija", "samopouzdanje"],
-        "motiv": ["motivacija", "početak", "navike"],
-        "samopouzdan": ["samopouzdanje", "intervju", "prezentacija"],
-        "razgovor": ["razgovor za posao", "intervju", "samopouzdanje"],
-        "intervju": ["razgovor za posao", "intervju", "samopouzdanje"],
-        "posao": ["razgovor za posao", "intervju", "samopouzdanje"],
-        "spav": ["spavanje", "večer", "smirivanje"],
-        "vecer": ["večer", "refleksija", "smirivanje"],
-        "disan": ["disanje", "smirivanje", "stres"],
-        "navik": ["navike", "rutina", "motivacija"],
-        "prokrast": ["prokrastinacija", "početak", "akcija"],
-    }
-
-    normalized_message = normalize_search_text(user_message)
-
-    for phrase, related_tags in phrase_boosts.items():
-        if phrase in normalized_message:
-            for related_tag in related_tags:
-                if normalize_search_text(related_tag) in normalized_tags:
-                    score += 4
-
-    return score
-
-
-def retrieve_relevant_knowledge(
-    user_message: str,
-    max_entries: int = 3,
-    minimum_score: int = 4,
-) -> list[dict]:
-    knowledge_base = load_knowledge_base()
-
-    scored_entries = []
-
-    for entry in knowledge_base:
-        score = score_knowledge_entry(user_message, entry)
-
-        if score >= minimum_score:
-            scored_entries.append(
-                {
-                    "score": score,
-                    "entry": entry,
-                }
-            )
-
-    scored_entries.sort(key=lambda item: item["score"], reverse=True)
-
-    top_entries = []
-
-    for item in scored_entries[:max_entries]:
-        top_entries.append(item["entry"])
-
-    return top_entries
-
-
-def build_knowledge_context(entries: list[dict]) -> str | None:
-    if not entries:
-        return None
-
-    formatted_entries = []
-
-    for index, entry in enumerate(entries, start=1):
-        title = entry.get("title", "")
-        tags = ", ".join(entry.get("tags", []))
-        content = entry.get("content", "")
-
-        formatted_entries.append(
-            f"""
-Knowledge entry {index}
-Title: {title}
-Tags: {tags}
-Content: {content}
-""".strip()
-        )
-
-    joined_entries = "\n\n---\n\n".join(formatted_entries)
-
-    return f"""
-RELEVANT KNOWLEDGE BASE CONTEXT:
-
-{joined_entries}
-
-How to use this knowledge:
-- Use this knowledge only if it is relevant to the user's message.
-- Do not mention the knowledge base unless the user asks.
-- Do not invent knowledge base entries.
-- If the knowledge is not enough, answer normally as an AI mental coach.
-- Current user message, safety rules, app language, selected tone, selected length, and selected format still have priority.
-"""
-
-
-def build_rag_sources(entries: list[dict]) -> list[dict]:
-    rag_sources = []
-
-    for entry in entries:
-        rag_sources.append(
-            {
-                "id": entry.get("id", ""),
-                "title": entry.get("title", ""),
-                "tags": entry.get("tags", []),
-            }
-        )
-
-    return rag_sources
+    return any(keyword in text for keyword in coaching_keywords)
 
 
 def detect_supported_language_by_keywords(message: str) -> str | None:
@@ -801,25 +939,6 @@ def detect_supported_language_by_keywords(message: str) -> str | None:
         "hvala",
         "dobro",
         "lose",
-        "veliki",
-        "velika",
-        "veliko",
-        "mali",
-        "mala",
-        "malo",
-        "pas",
-        "macka",
-        "trci",
-        "trcim",
-        "trcati",
-        "biljka",
-        "rastrkana",
-        "crna",
-        "crni",
-        "crno",
-        "bijela",
-        "bijeli",
-        "bijelo",
         "ucim",
         "ucenje",
         "ispit",
@@ -868,15 +987,6 @@ def detect_supported_language_by_keywords(message: str) -> str | None:
         "breathing",
         "tired",
         "calm",
-        "dog",
-        "cat",
-        "plant",
-        "big",
-        "small",
-        "black",
-        "white",
-        "running",
-        "run",
         "study",
         "work",
         "job",
@@ -913,16 +1023,6 @@ def detect_supported_language_by_keywords(message: str) -> str | None:
         "mude",
         "ruhig",
         "atmen",
-        "hund",
-        "katze",
-        "pflanze",
-        "gross",
-        "grosser",
-        "klein",
-        "schwarz",
-        "weiss",
-        "rennt",
-        "laufe",
         "lernen",
         "arbeit",
         "vorstellungsgesprach",
@@ -968,14 +1068,6 @@ def detect_supported_language_by_keywords(message: str) -> str | None:
         "imam tremu",
         "imam stres",
         "imam ispit",
-        "veliki pas",
-        "veliki pas trci",
-        "mali pas",
-        "pas trci",
-        "crna macka",
-        "crna mačka",
-        "rastrkana biljka",
-        "etim okolo",
     ]
 
     exact_english_phrases = [
@@ -989,10 +1081,6 @@ def detect_supported_language_by_keywords(message: str) -> str | None:
         "thanks",
         "i feel",
         "i am stressed",
-        "big dog",
-        "big dog runs",
-        "dog runs",
-        "black cat",
     ]
 
     exact_german_phrases = [
@@ -1004,10 +1092,6 @@ def detect_supported_language_by_keywords(message: str) -> str | None:
         "danke",
         "ich bin",
         "ich brauche",
-        "grosser hund",
-        "grosser hund rennt",
-        "der hund rennt",
-        "schwarze katze",
     ]
 
     for phrase in exact_croatian_phrases:
@@ -1116,8 +1200,8 @@ STRICT RULE:
 """
 
 
-def detect_user_overrides(message: str) -> dict:
-    text = message.lower()
+def detect_explicit_style_overrides(message: str) -> dict:
+    text = normalize_search_text(message)
 
     detected = {
         "tone": None,
@@ -1127,120 +1211,121 @@ def detect_user_overrides(message: str) -> dict:
     }
 
     if any(
-        word in text
-        for word in [
-            "kratko",
-            "kratak",
-            "kratka",
-            "ukratko",
-            "sažeto",
-            "sazeto",
-            "sažet",
-            "sazet",
-            "brief",
-            "short",
-            "kurz",
-        ]
-    ):
-        detected["answerLength"] = "Kratko"
-
-    if any(
-        word in text
-        for word in [
-            "srednje",
-            "umjereno",
-            "normalno dugo",
-            "srednje dugo",
-            "medium",
-            "mittel",
-        ]
-    ):
-        detected["answerLength"] = "Srednje"
-
-    if any(
-        word in text
-        for word in [
-            "dugačko",
-            "dugacko",
-            "dugo",
-            "detaljno",
-            "opširno",
-            "opsirno",
-            "detaljan",
-            "detaljna",
-            "long",
-            "detailed",
-            "lang",
-            "ausführlich",
-            "ausfuhrlich",
-        ]
-    ):
-        detected["answerLength"] = "Dugačko"
-
-    if any(
-        word in text
-        for word in [
-            "smireno",
-            "smiren",
-            "mirno",
-            "miran",
-            "calm",
-            "ruhig",
-            "beruhigend",
+        phrase in text
+        for phrase in [
+            "ton neka bude smiren",
+            "odgovori smirenim tonom",
+            "odgovori mirnim tonom",
+            "koristi smiren ton",
+            "koristi miran ton",
+            "use a calm tone",
+            "answer in a calm tone",
+            "respond in a calm tone",
+            "calm tone",
+            "ruhiger ton",
+            "antworte ruhig",
+            "antworte in einem ruhigen ton",
         ]
     ):
         detected["tone"] = "Smiren"
 
     if any(
-        word in text
-        for word in [
-            "motivirajuće",
-            "motivirajuce",
-            "motivirajući",
-            "motivirajuci",
-            "motivacijski",
-            "motiviraj me",
-            "nabrij",
-            "nabrijano",
-            "motivational",
-            "motivierend",
-            "motiviere",
+        phrase in text
+        for phrase in [
+            "ton neka bude motivirajuci",
+            "odgovori motivirajucim tonom",
+            "koristi motivirajuci ton",
+            "motivacijski ton",
+            "use a motivating tone",
+            "answer in a motivating tone",
+            "respond in a motivating tone",
+            "motivating tone",
+            "motivational tone",
+            "motivierender ton",
+            "antworte motivierend",
+            "antworte in einem motivierenden ton",
         ]
     ):
         detected["tone"] = "Motivirajući"
 
     if any(
-        word in text
-        for word in [
-            "direktno",
-            "direktan",
-            "direktna",
-            "izravno",
-            "bez okolišanja",
-            "bez okolisanja",
-            "direct",
-            "direkt",
+        phrase in text
+        for phrase in [
+            "ton neka bude direktan",
+            "odgovori direktnim tonom",
+            "odgovori izravnim tonom",
+            "koristi direktan ton",
+            "use a direct tone",
+            "answer in a direct tone",
+            "respond in a direct tone",
+            "direct tone",
+            "direkter ton",
+            "antworte direkt",
+            "antworte in einem direkten ton",
         ]
     ):
         detected["tone"] = "Direktan"
 
     if any(
-        word in text
-        for word in [
-            "nježno",
-            "njezno",
-            "nježan",
-            "njezan",
-            "nježna",
-            "njezna",
-            "toplo",
-            "blago",
-            "gentle",
-            "sanft",
-            "weich",
+        phrase in text
+        for phrase in [
+            "ton neka bude njezan",
+            "odgovori njeznim tonom",
+            "koristi njezan ton",
+            "use a gentle tone",
+            "answer in a gentle tone",
+            "respond in a gentle tone",
+            "gentle tone",
+            "sanfter ton",
+            "antworte sanft",
+            "antworte in einem sanften ton",
         ]
     ):
         detected["tone"] = "Nježan"
+
+    if any(
+        phrase in text
+        for phrase in [
+            "odgovori kratko",
+            "odgovori ukratko",
+            "daj kratak odgovor",
+            "daj kratki odgovor",
+            "answer briefly",
+            "keep it short",
+            "short answer",
+            "kurz antworten",
+            "antworte kurz",
+        ]
+    ):
+        detected["answerLength"] = "Kratko"
+
+    if any(
+        phrase in text
+        for phrase in [
+            "odgovori srednje dugo",
+            "daj srednje dug odgovor",
+            "medium answer",
+            "medium length",
+            "mittel lange antwort",
+        ]
+    ):
+        detected["answerLength"] = "Srednje"
+
+    if any(
+        phrase in text
+        for phrase in [
+            "odgovori detaljno",
+            "odgovori dugacko",
+            "daj detaljan odgovor",
+            "daj dug odgovor",
+            "answer in detail",
+            "detailed answer",
+            "long answer",
+            "antworte ausfuhrlich",
+            "lange antwort",
+        ]
+    ):
+        detected["answerLength"] = "Dugačko"
 
     if any(
         phrase in text
@@ -1249,12 +1334,9 @@ def detect_user_overrides(message: str) -> dict:
             "format odgovora neka bude u 3 koraka",
             "odgovori u 3 koraka",
             "strukturiraj u 3 koraka",
-            "strukturiraj odgovor u 3 koraka",
             "daj odgovor u 3 koraka",
             "u obliku 3 koraka",
             "u obliku tri koraka",
-            "kao 3 koraka",
-            "kao tri koraka",
             "answer in 3 steps",
             "format as 3 steps",
             "in 3 steps",
@@ -1267,21 +1349,13 @@ def detect_user_overrides(message: str) -> dict:
     if any(
         phrase in text
         for phrase in [
-            "format neka bude kratka vježba",
             "format neka bude kratka vjezba",
-            "format odgovora neka bude kratka vježba",
             "format odgovora neka bude kratka vjezba",
-            "odgovori kao kratka vježba",
             "odgovori kao kratka vjezba",
-            "strukturiraj kao vježbu",
             "strukturiraj kao vjezbu",
-            "strukturiraj odgovor kao vježbu",
-            "strukturiraj odgovor kao vjezbu",
-            "u obliku kratke vježbe",
             "u obliku kratke vjezbe",
             "answer as a short exercise",
             "format as a short exercise",
-            "als kurze übung",
             "als kurze ubung",
         ]
     ):
@@ -1294,8 +1368,6 @@ def detect_user_overrides(message: str) -> dict:
             "format odgovora neka bude pitanja za refleksiju",
             "odgovori kroz pitanja za refleksiju",
             "odgovori kao pitanja za refleksiju",
-            "strukturiraj kao pitanja za refleksiju",
-            "strukturiraj odgovor kao pitanja za refleksiju",
             "daj mi pitanja za refleksiju",
             "postavi mi pitanja za refleksiju",
             "u obliku pitanja za refleksiju",
@@ -1314,12 +1386,9 @@ def detect_user_overrides(message: str) -> dict:
             "format odgovora neka bude mini plan",
             "odgovori kao mini plan",
             "strukturiraj kao mini plan",
-            "strukturiraj odgovor kao mini plan",
             "u obliku mini plana",
-            "kao mini plan",
             "answer as a mini plan",
             "format as a mini plan",
-            "als mini-plan",
             "als mini plan",
         ]
     ):
@@ -1332,9 +1401,7 @@ def detect_user_overrides(message: str) -> dict:
             "format odgovora neka bude jedan konkretan zadatak",
             "odgovori kao jedan konkretan zadatak",
             "strukturiraj kao jedan konkretan zadatak",
-            "strukturiraj odgovor kao jedan konkretan zadatak",
             "u obliku jednog konkretnog zadatka",
-            "daj odgovor kao jedan konkretan zadatak",
             "answer as one concrete task",
             "one concrete task format",
             "eine konkrete aufgabe",
@@ -1347,6 +1414,89 @@ def detect_user_overrides(message: str) -> dict:
         detected["hasOverride"] = True
 
     return detected
+
+
+def normalize_tone(value: str | None) -> str | None:
+    if not value:
+        return None
+
+    normalized = normalize_search_text(value.strip())
+
+    tone_map = {
+        "smiren": "Smiren",
+        "calm": "Smiren",
+        "ruhig": "Smiren",
+        "motivirajuci": "Motivirajući",
+        "motivating": "Motivirajući",
+        "motivational": "Motivirajući",
+        "motivierend": "Motivirajući",
+        "direktan": "Direktan",
+        "direktno": "Direktan",
+        "direct": "Direktan",
+        "direkt": "Direktan",
+        "njezan": "Nježan",
+        "njezno": "Nježan",
+        "gentle": "Nježan",
+        "sanft": "Nježan",
+        "weich": "Nježan",
+    }
+
+    return tone_map.get(normalized, value)
+
+
+def normalize_answer_length(value: str | None) -> str | None:
+    if not value:
+        return None
+
+    normalized = normalize_search_text(value.strip())
+
+    length_map = {
+        "kratko": "Kratko",
+        "short": "Kratko",
+        "brief": "Kratko",
+        "kurz": "Kratko",
+        "srednje": "Srednje",
+        "medium": "Srednje",
+        "mittel": "Srednje",
+        "dugacko": "Dugačko",
+        "dugo": "Dugačko",
+        "long": "Dugačko",
+        "detailed": "Dugačko",
+        "lang": "Dugačko",
+    }
+
+    return length_map.get(normalized, value)
+
+
+def normalize_response_format(value: str | None) -> str | None:
+    if not value:
+        return None
+
+    normalized = normalize_search_text(value.strip())
+
+    format_map = {
+        "slobodno": "Slobodno",
+        "free": "Slobodno",
+        "frei": "Slobodno",
+        "free form": "Slobodno",
+        "u 3 koraka": "U 3 koraka",
+        "3 koraka": "U 3 koraka",
+        "in 3 steps": "U 3 koraka",
+        "in 3 schritten": "U 3 koraka",
+        "kratka vjezba": "Kratka vježba",
+        "short exercise": "Kratka vježba",
+        "kurze ubung": "Kratka vježba",
+        "pitanja za refleksiju": "Pitanja za refleksiju",
+        "reflection questions": "Pitanja za refleksiju",
+        "reflexionsfragen": "Pitanja za refleksiju",
+        "mini plan": "Mini plan",
+        "mini-plan": "Mini plan",
+        "jedan konkretan zadatak": "Jedan konkretan zadatak",
+        "one concrete task": "Jedan konkretan zadatak",
+        "eine konkrete aufgabe": "Jedan konkretan zadatak",
+    }
+
+    return format_map.get(normalized, value)
 
 
 def build_style_instructions(
@@ -1362,29 +1512,40 @@ def build_style_instructions(
 
     tone_rules = {
         "Smiren": """
-TONE MODE: CALM
-Use a calm, grounded, peaceful and emotionally steady tone.
-Mention breathing, relaxing the body, or taking one small step.
-Avoid excitement, urgency, and motivational slogans.
+TONE MODE: VERY CALM
+The calm tone must be strongly noticeable.
+Sound peaceful, slow, grounded, stable, and reassuring.
+Use calm wording in the selected app language.
+Avoid hype, pressure, intensity, commands, and motivational slogans.
+Make the whole answer feel like the user can slow down and breathe.
 """,
         "Motivirajući": """
-TONE MODE: MOTIVATING
-Use an energetic, encouraging, coach-like tone.
-Use short and powerful sentences.
-Make the user feel ready to act.
+TONE MODE: EXTREMELY MOTIVATING
+The motivating tone must be VERY STRONG and obvious.
+Sound energetic, uplifting, confident, fired-up, and coach-like.
+Use strong encouraging words in the selected app language.
+Use short, punchy, high-energy sentences.
+Make the user feel activated and ready to act immediately.
+Do NOT sound neutral, clinical, passive, or overly calm.
+Do NOT simply summarize RAG content.
+Rewrite everything with strong motivational energy.
 """,
         "Direktan": """
-TONE MODE: DIRECT
-Use a practical, firm, concise and action-oriented tone.
-Prefer clear steps and direct instructions.
-Avoid long emotional introductions.
+TONE MODE: EXTREMELY DIRECT
+The direct tone must be very obvious.
+Sound practical, firm, clear, no-nonsense, and action-oriented.
+Use direct wording in the selected app language.
+Avoid emotional padding, long validation, and overly soft language.
+Make the answer feel like a clear action instruction.
 """,
         "Nježan": """
-TONE MODE: GENTLE
-Use a warm, soft, comforting tone.
-Validate the user's feeling.
-Use invitations instead of harsh commands.
-Avoid pressure.
+TONE MODE: EXTREMELY GENTLE
+The gentle tone must be VERY STRONG and obvious.
+Sound warm, soft, emotionally validating, caring, and low-pressure.
+Start by validating the user's feeling.
+Avoid sounding like a checklist, strict coach, command, or manual.
+Make the user feel supported, safe, and not judged.
+The final answer should feel emotionally soft, not just practical.
 """,
     }
 
@@ -1459,6 +1620,16 @@ ABSOLUTE LANGUAGE RULE:
 - If memory contains another language, ignore that language and answer only in the selected app language.
 - If knowledge base context contains another language, use the idea only, but answer only in the selected app language.
 - If the user's message is short, unclear, mixed-language, or unknown, still answer only in the selected app language.
+
+STYLE PRIORITY RULE:
+- The selected tone, selected answer length, and selected response format are mandatory.
+- These style settings override knowledge base wording, memory wording, and chat history wording.
+- The selected tone must be intense and obvious, not subtle.
+- The selected tone must affect every sentence.
+- Do not confuse the user's topic with the selected tone.
+- A message about calming, stress, breathing, or relaxation does NOT mean the tone is calm.
+- A message about motivation does NOT mean the tone is motivating.
+- The selected tone comes from the style settings, not from the topic.
 """
 
 
@@ -1467,9 +1638,8 @@ def build_final_language_guard(app_language: str) -> str:
         return """
 FINAL LANGUAGE LOCK:
 You must answer in German only.
-Do not answer in Croatian.
-Do not use Croatian words such as "Hej", "Udahni", "Idemo", "Možeš", "Polako", "Nježno", or "Hvala".
-Even if the user writes Croatian, mixed Croatian, unclear text, or nonsense text, answer in German only.
+Do not answer in Croatian or English.
+Even if the user writes Croatian, English, mixed text, unclear text, or nonsense text, answer in German only.
 This instruction overrides examples, chat history, memory, and knowledge base wording.
 """
 
@@ -1491,21 +1661,189 @@ This instruction overrides examples, chat history, memory, and knowledge base wo
 """
 
 
+def build_final_response_instruction(
+    tone: str | None,
+    answer_length: str | None,
+    response_format: str | None,
+    app_language: str,
+) -> str:
+    selected_tone = tone or "Smiren"
+    selected_length = answer_length or "Kratko"
+    selected_format = response_format or "Slobodno"
+
+    tone_intensity_instruction = ""
+
+    if selected_tone == "Motivirajući":
+        tone_intensity_instruction = """
+EXTREME MOTIVATIONAL STYLE REQUIREMENTS:
+- The beginning and ending of the answer must make the motivational tone unmistakable.
+- The first sentence must immediately sound energetic, confident, and activating.
+- The final sentence must leave the user feeling ready to act.
+- Use short, strong, punchy sentences.
+- Do not sound neutral, clinical, passive, or overly calm.
+- The middle can contain practical advice, but it must still have energetic wording.
+
+If app language is Hrvatski:
+- Start with a phrase like: "Tooo, idemo!", "Idemo jako!", "Ajmo, imaš ovo!", or "To je to, kreni!"
+- End with a phrase like: "Imaš ovo!", "Ajmo jako!", "Kreni sad!", "Tooo, samo hrabro!", or "Sad je trenutak!"
+
+If app language is English:
+- Start with a phrase like: "Yes, let’s go!", "You’ve got this!", "Let’s do this!", or "Alright, time to move!"
+- End with a phrase like: "You’ve got this!", "Start now!", "One strong step!", "Let’s go!", or "This is your moment!"
+
+If app language is Deutsch:
+- Start with a phrase like: "Ja, los geht’s!", "Du schaffst das!", "Komm, jetzt geht’s los!", or "Genau so, jetzt starten!"
+- End with a phrase like: "Du schaffst das!", "Leg jetzt los!", "Ein starker Schritt!", "Los geht’s!", or "Jetzt ist dein Moment!"
+"""
+    elif selected_tone == "Nježan":
+        tone_intensity_instruction = """
+EXTREME GENTLE STYLE REQUIREMENTS:
+- The beginning and ending of the answer must make the gentle tone unmistakable.
+- The first sentence must immediately validate the user’s feeling.
+- The final sentence must feel emotionally safe, soft, and low-pressure.
+- Avoid pressure, harsh commands, hype, and checklist-like wording.
+- The middle can contain practical advice, but it must still feel warm and supportive.
+
+If app language is Hrvatski:
+- Start with a phrase like: "U redu je.", "Polako.", "Nježno prema sebi.", "Razumljivo je da se tako osjećaš.", or "Možeš polako."
+- End with a phrase like: "Dovoljno je za sada.", "Samo mali korak.", "Polako, tu si.", "Ne moraš sve odjednom.", or "Nježno, korak po korak."
+
+If app language is English:
+- Start with a phrase like: "It’s okay.", "Take it gently.", "Be kind to yourself.", "It makes sense that you feel this way.", or "You can take this slowly."
+- End with a phrase like: "That is enough for now.", "Just one small step.", "You don’t have to do it all at once.", "Gently, one step at a time.", or "You’re okay right here."
+
+If app language is Deutsch:
+- Start with a phrase like: "Es ist in Ordnung.", "Ganz langsam.", "Sei sanft mit dir.", "Es ist verständlich, dass du dich so fühlst.", or "Du kannst es langsam angehen."
+- End with a phrase like: "Das reicht für den Moment.", "Nur ein kleiner Schritt.", "Du musst nicht alles auf einmal schaffen.", "Sanft, Schritt für Schritt.", or "Du bist gerade hier, und das genügt."
+"""
+    elif selected_tone == "Direktan":
+        tone_intensity_instruction = """
+EXTREME DIRECT STYLE REQUIREMENTS:
+- The beginning and ending of the answer must make the direct tone unmistakable.
+- The first sentence must immediately sound practical and clear.
+- The final sentence must push toward one concrete action.
+- Avoid long emotional introductions.
+- Avoid overly soft language.
+- The middle should be clear, structured, and action-oriented.
+
+If app language is Hrvatski:
+- Start with a phrase like: "Napravi ovo.", "Kreni ovako.", "Bez kompliciranja.", "Ovo ti je plan.", or "Slušaj: kreni od ovoga."
+- End with a phrase like: "Sad to napravi.", "Kreni odmah.", "Ne kompliciraj.", "Prvi korak sada.", or "To je dovoljno za početak."
+
+If app language is English:
+- Start with a phrase like: "Do this.", "Start like this.", "No overthinking.", "Here’s the plan.", or "Listen: start here."
+- End with a phrase like: "Do it now.", "Start immediately.", "Don’t overcomplicate it.", "First step now.", or "That’s enough to begin."
+
+If app language is Deutsch:
+- Start with a phrase like: "Mach das.", "Fang so an.", "Nicht verkomplizieren.", "Das ist der Plan.", or "Hör zu: Fang hier an."
+- End with a phrase like: "Mach es jetzt.", "Fang sofort an.", "Nicht verkomplizieren.", "Der erste Schritt jetzt.", or "Das reicht für den Anfang."
+"""
+    elif selected_tone == "Smiren":
+        tone_intensity_instruction = """
+EXTREME CALM STYLE REQUIREMENTS:
+- The beginning and ending of the answer must make the calm tone unmistakable.
+- The first sentence must immediately slow the rhythm down.
+- The final sentence must leave the user feeling grounded and steady.
+- Avoid hype, urgency, and intense motivational language.
+- The middle can contain practical advice, but it must still feel calm and grounded.
+
+If app language is Hrvatski:
+- Start with a phrase like: "Polako.", "Udahni.", "Zastani na trenutak.", "Mirno.", or "Krenimo korak po korak."
+- End with a phrase like: "Korak po korak.", "Ne moraš žuriti.", "Samo mirno.", "Jedan mali korak je dovoljan.", or "Udahni i kreni polako."
+
+If app language is English:
+- Start with a phrase like: "Slowly.", "Take a breath.", "Pause for a moment.", "Steady.", or "Let’s go one step at a time."
+- End with a phrase like: "One step at a time.", "There is no rush.", "Stay steady.", "One small step is enough.", or "Breathe, then move slowly."
+
+If app language is Deutsch:
+- Start with a phrase like: "Langsam.", "Atme einmal durch.", "Halte kurz inne.", "Ganz ruhig.", or "Gehen wir Schritt für Schritt."
+- End with a phrase like: "Schritt für Schritt.", "Du musst dich nicht beeilen.", "Ganz ruhig.", "Ein kleiner Schritt reicht.", or "Atme durch und geh langsam weiter."
+"""
+
+    return f"""
+FINAL RESPONSE INSTRUCTION:
+
+You may use RAG context for facts, ideas, techniques, and examples.
+However, do NOT copy the style, structure, or wording of the RAG context.
+
+The RAG context gives you WHAT to say.
+The selected tone tells you HOW to say it.
+The HOW is mandatory and must be very noticeable.
+
+Selected tone: {selected_tone}
+Selected answer length: {selected_length}
+Selected response format: {selected_format}
+Selected app language: {app_language}
+
+{tone_intensity_instruction}
+
+Mandatory rules:
+- Use ONLY the selected app language: {app_language}.
+- The selected tone must be unmistakable in the FIRST sentence.
+- The selected tone must be unmistakable in the LAST sentence.
+- Do not use Croatian tone phrases when app language is English or Deutsch.
+- Do not use English tone phrases when app language is Hrvatski or Deutsch.
+- Do not use German tone phrases when app language is Hrvatski or English.
+- The beginning and ending are the most important places for tone.
+- Apply the selected tone strongly to the entire final answer.
+- The tone must be obvious, not subtle.
+- The tone must affect word choice, sentence length, rhythm, and emotional energy.
+- Apply the selected answer length to the entire final answer.
+- Apply the selected response format to the entire final answer.
+- RAG content is source material, not the final writing style.
+- Do not produce a neutral answer when a tone is selected.
+- Do not simply list techniques from RAG.
+- Rewrite the final answer so the selected tone is clearly felt.
+- Do not confuse the topic with tone.
+- If the user asks for a calming exercise while selected tone is motivating, give a calming exercise in a motivating tone.
+- If the user asks for motivation while selected tone is gentle, give motivation in a gentle tone.
+"""
+
+
 @app.get("/")
 def root():
     return {"status": "ok"}
 
 
 @app.get("/api/memory")
-def get_memory():
-    memory_data = load_user_memory()
-    return {"memory": memory_data}
+def get_memory(guestId: str | None = Query(default=None)):
+    memory_owner_id = build_memory_owner_id(
+        user_id=None,
+        guest_id=guestId,
+    )
+
+    memory_data = load_user_memory(memory_owner_id)
+
+    return {
+        "memoryOwnerId": memory_owner_id,
+        "memory": memory_data,
+    }
 
 
 @app.delete("/api/memory")
-def clear_memory():
-    save_user_memory(DEFAULT_MEMORY.copy())
-    return {"memory": DEFAULT_MEMORY.copy(), "message": "Memory cleared."}
+def clear_memory(
+    guestId: str | None = Query(default=None),
+    memory_request: MemoryRequest | None = Body(default=None),
+):
+    body_guest_id = None
+
+    if memory_request:
+        body_guest_id = memory_request.guestId
+
+    effective_guest_id = guestId or body_guest_id
+
+    memory_owner_id = build_memory_owner_id(
+        user_id=None,
+        guest_id=effective_guest_id,
+    )
+
+    clear_user_memory(memory_owner_id)
+
+    return {
+        "memoryOwnerId": memory_owner_id,
+        "memory": DEFAULT_MEMORY.copy(),
+        "message": "Memory cleared.",
+    }
 
 
 @app.get("/api/knowledge")
@@ -1543,6 +1881,19 @@ def chat(request: ChatRequest):
 
     app_language = request.appLanguage or "Hrvatski"
 
+    memory_owner_id = build_memory_owner_id(
+        user_id=None,
+        guest_id=request.guestId,
+    )
+
+    print(
+        "MEMORY OWNER DEBUG:",
+        {
+            "guestId": request.guestId,
+            "memory_owner_id": memory_owner_id,
+        },
+    )
+
     detected_language = detect_message_language(request.message)
     language_warning = build_language_warning(app_language, detected_language)
 
@@ -1550,13 +1901,33 @@ def chat(request: ChatRequest):
         return {
             "reply": language_warning,
             "ragSources": [],
+            "memoryOwnerId": memory_owner_id,
         }
 
-    user_overrides = detect_user_overrides(request.message)
+    explicit_overrides = detect_explicit_style_overrides(request.message)
 
-    effective_tone = user_overrides["tone"] or request.tone
-    effective_answer_length = user_overrides["answerLength"] or request.answerLength
-    effective_response_format = user_overrides["responseFormat"] or request.responseFormat
+    effective_tone = normalize_tone(request.tone or explicit_overrides["tone"])
+    effective_answer_length = normalize_answer_length(
+        request.answerLength or explicit_overrides["answerLength"]
+    )
+    effective_response_format = normalize_response_format(
+        request.responseFormat or explicit_overrides["responseFormat"]
+    )
+
+    print(
+        "STYLE DEBUG:",
+        {
+            "request_tone": request.tone,
+            "request_answerLength": request.answerLength,
+            "request_responseFormat": request.responseFormat,
+            "explicit_tone_override": explicit_overrides["tone"],
+            "explicit_answerLength_override": explicit_overrides["answerLength"],
+            "explicit_responseFormat_override": explicit_overrides["responseFormat"],
+            "effective_tone": effective_tone,
+            "effective_answer_length": effective_answer_length,
+            "effective_response_format": effective_response_format,
+        },
+    )
 
     style_instructions = build_style_instructions(
         effective_tone,
@@ -1565,12 +1936,34 @@ def chat(request: ChatRequest):
         app_language,
     )
 
-    memory_data = load_user_memory()
+    memory_data = load_user_memory(memory_owner_id)
     memory_context = build_memory_context(memory_data)
 
-    relevant_knowledge = retrieve_relevant_knowledge(request.message)
-    knowledge_context = build_knowledge_context(relevant_knowledge)
-    rag_sources = build_rag_sources(relevant_knowledge)
+    relevant_rag_chunks = []
+
+    if message_looks_like_coaching_topic(request.message):
+        relevant_rag_chunks = retrieve_relevant_rag_chunks(
+            client=client,
+            user_message=request.message,
+            max_entries=3,
+        )
+
+    knowledge_context = build_rag_chunks_context(relevant_rag_chunks)
+    rag_sources = build_rag_sources(relevant_rag_chunks)
+
+    print(
+        "RAG DEBUG:",
+        {
+            "looks_like_coaching_topic": message_looks_like_coaching_topic(
+                request.message
+            ),
+            "rag_count": len(relevant_rag_chunks),
+            "rag_titles": [chunk.get("title") for chunk in relevant_rag_chunks],
+            "rag_similarities": [
+                chunk.get("similarity") for chunk in relevant_rag_chunks
+            ],
+        },
+    )
 
     unknown_language_context = None
 
@@ -1591,7 +1984,6 @@ def chat(request: ChatRequest):
 
     model_messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "system", "content": style_instructions},
     ]
 
     if unknown_language_context:
@@ -1607,6 +1999,20 @@ def chat(request: ChatRequest):
 
     model_messages.extend(conversation_context)
 
+    model_messages.append({"role": "system", "content": style_instructions})
+
+    model_messages.append(
+        {
+            "role": "system",
+            "content": build_final_response_instruction(
+                tone=effective_tone,
+                answer_length=effective_answer_length,
+                response_format=effective_response_format,
+                app_language=app_language,
+            ),
+        }
+    )
+
     model_messages.append(
         {"role": "system", "content": build_final_language_guard(app_language)}
     )
@@ -1616,7 +2022,7 @@ def chat(request: ChatRequest):
     try:
         response = client.chat.completions.create(
             model=model_name,
-            temperature=0.4,
+            temperature=0.7,
             messages=model_messages,
         )
 
@@ -1624,33 +2030,6 @@ def chat(request: ChatRequest):
 
         if reply:
             reply = reply.strip()
-
-            if user_overrides["hasOverride"]:
-                selected_language = app_language
-
-                if selected_language == "Hrvatski":
-                    notice = (
-                        "Napomena: ton, duljinu i format možeš podesiti i u "
-                        "postavkama mentalnog trenera, ali poštovat ću tvoju "
-                        "trenutnu želju.\n\n"
-                    )
-                    reply = notice + reply
-
-                elif selected_language == "English":
-                    notice = (
-                        "Note: you can also adjust tone, length, and format "
-                        "in the mental coach settings, but I will respect your "
-                        "current request.\n\n"
-                    )
-                    reply = notice + reply
-
-                elif selected_language == "Deutsch":
-                    notice = (
-                        "Hinweis: Ton, Länge und Format kannst du auch in den "
-                        "Einstellungen des Mentaltrainers anpassen, aber ich "
-                        "werde deinen aktuellen Wunsch berücksichtigen.\n\n"
-                    )
-                    reply = notice + reply
 
             if len(reply) >= 2:
                 starts_with_quote = reply[0] in ['"', "'", "“", "„", "”"]
@@ -1674,9 +2053,9 @@ def chat(request: ChatRequest):
                     json.dumps(updated_memory, ensure_ascii=False),
                 )
 
-                save_user_memory(updated_memory)
+                save_user_memory(memory_owner_id, updated_memory)
 
-                saved_memory_check = load_user_memory()
+                saved_memory_check = load_user_memory(memory_owner_id)
 
                 print(
                     "SAVED MEMORY AFTER SAVE:",
@@ -1689,6 +2068,7 @@ def chat(request: ChatRequest):
         return {
             "reply": reply,
             "ragSources": rag_sources,
+            "memoryOwnerId": memory_owner_id,
         }
 
     except Exception as e:
