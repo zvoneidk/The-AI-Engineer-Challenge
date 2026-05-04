@@ -547,8 +547,14 @@ export default function Home() {
   }, [tone, answerLength, responseFormat, appLanguage]);
 
   useEffect(() => {
-    scrollToBottom();
-  }, [messages, loading]);
+  const isMobile = window.innerWidth < 768;
+
+  if (isMobile) {
+    return;
+  }
+
+  scrollToBottom();
+}, [messages, loading]);
 
   useEffect(() => {
     const loadSession = async () => {
@@ -989,8 +995,8 @@ export default function Home() {
       <div className="absolute right-0 top-0 h-72 w-72 rounded-full bg-blue-500/20 blur-3xl sm:right-20 sm:h-96 sm:w-96" />
 
       <div className="relative z-10 flex min-h-screen w-full items-start justify-center p-4 sm:p-6 lg:items-center lg:justify-end lg:pl-[420px]">
-        <div className="grid w-full max-w-5xl gap-4 sm:gap-2 lg:grid-cols-[0.95fr_1.25fr]">
-          <section className="rounded-3xl border border-white/10 bg-black/60 p-4 shadow-2xl backdrop-blur-md sm:p-6">
+        <div className="grid w-full max-w-4xl min-w-0 gap-4 sm:gap-3 lg:grid-cols-[0.95fr_1.25fr]">
+          <section className="min-w-0 rounded-3xl border border-white/10 bg-black/60 p-4 shadow-2xl backdrop-blur-md sm:p-6">
             <p className="mb-3 inline-flex rounded-full border border-blue-400/30 bg-blue-400/10 px-3 py-1 text-xs text-blue-200">
               {t.badge}
             </p>
@@ -1085,7 +1091,7 @@ export default function Home() {
                 </div>
               ) : authUser ? (
                 <div className="space-y-3">
-                  <p className="break-words text-xs text-white/70">
+                  <p className="break-words text-xs text-white/70 [overflow-wrap:anywhere]">
                     {appLanguage === "English"
                       ? `Signed in as ${authUser.email || authUser.id}`
                       : appLanguage === "Deutsch"
@@ -1215,14 +1221,14 @@ export default function Home() {
             )}
           </section>
 
-          <section className="rounded-3xl border border-white/10 bg-black/65 p-4 shadow-2xl backdrop-blur-md sm:p-6">
+          <section className="min-w-0 rounded-3xl border border-white/10 bg-black/65 p-4 shadow-2xl backdrop-blur-md sm:p-6">
             <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div>
+              <div className="min-w-0">
                 <h2 className="text-2xl font-bold">{t.chatTitle}</h2>
                 <p className="text-xs text-white/60">{t.chatSubtitle}</p>
               </div>
 
-              <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-row">
+              <div className="grid shrink-0 grid-cols-2 gap-2 sm:flex sm:flex-row">
                 <button
                   onClick={handleClear}
                   className="rounded-xl border border-white/10 px-3 py-2 text-xs text-white/70 transition hover:bg-white/10 hover:text-white"
@@ -1239,7 +1245,7 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="mb-4 max-h-[45vh] space-y-3 overflow-y-auto rounded-2xl border border-white/10 bg-black/30 p-3 sm:max-h-72 sm:p-4">
+            <div className="mb-4 max-h-[45vh] min-w-0 space-y-3 overflow-y-auto rounded-2xl border border-white/10 bg-black/30 p-3 sm:max-h-72 sm:p-4">
               {messages.length === 0 && (
                 <p className="text-xs text-white/50">{t.emptyChat}</p>
               )}
@@ -1247,7 +1253,7 @@ export default function Home() {
               {messages.map((chatMessage, index) => (
                 <div
                   key={index}
-                  className={`rounded-2xl p-3 text-sm ${
+                  className={`overflow-hidden rounded-2xl p-3 text-sm ${
                     chatMessage.role === "user"
                       ? "ml-auto max-w-[92%] bg-blue-600/80 text-white sm:max-w-[85%]"
                       : "mr-auto max-w-[94%] border border-blue-400/20 bg-black/45 text-white/90 sm:max-w-[90%]"
@@ -1259,14 +1265,14 @@ export default function Home() {
                       : t.assistantLabel}
                   </p>
 
-                  <div className="prose prose-invert prose-sm max-w-none whitespace-pre-wrap break-words leading-relaxed">
+                  <div className="prose prose-invert prose-sm max-w-none whitespace-pre-wrap break-words leading-relaxed [overflow-wrap:anywhere]">
                     <ReactMarkdown>{chatMessage.content}</ReactMarkdown>
                   </div>
 
                   {chatMessage.role === "assistant" &&
                     chatMessage.ragSources &&
                     chatMessage.ragSources.length > 0 && (
-                      <div className="mt-3 rounded-xl border border-emerald-400/20 bg-emerald-500/10 p-2">
+                      <div className="mt-3 overflow-hidden rounded-xl border border-emerald-400/20 bg-emerald-500/10 p-2">
                         <p className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-emerald-200">
                           {t.ragSourcesLabel}
                         </p>
@@ -1275,7 +1281,7 @@ export default function Home() {
                           {chatMessage.ragSources.map((source) => (
                             <span
                               key={source.id}
-                              className="rounded-full border border-emerald-300/20 bg-black/30 px-2 py-1 text-[10px] text-emerald-100"
+                              className="max-w-full break-words rounded-full border border-emerald-300/20 bg-black/30 px-2 py-1 text-[10px] text-emerald-100 [overflow-wrap:anywhere]"
                             >
                               {source.title}
                             </span>
