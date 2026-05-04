@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Query, Body
+from fastapi import FastAPI, HTTPException, Query, Body, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from openai import OpenAI
@@ -79,6 +79,101 @@ def supabase_request(method: str, path: str, payload: dict | list | None = None)
 
     except URLError as e:
         raise RuntimeError(f"Supabase URL error: {e}") from e
+
+
+def get_supabase_user_from_access_token(access_token: str | None) -> dict | None:
+    if not access_token:
+        return None
+
+    if not SUPABASE_URL:
+        return None
+
+    if not SUPABASE_SERVICE_ROLE_KEY:
+        return None
+
+    clean_token = access_token.strip()
+
+    if clean_token.lower().startswith("bearer "):
+        clean_token = clean_token[7:].strip()
+
+    if not clean_token:
+        return None
+
+    url = f"{SUPABASE_URL}/auth/v1/user"
+
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {clean_token}",
+        "Content-Type": "application/json",
+    }
+
+    request = Request(
+        url=url,
+        headers=headers,
+        method="GET",
+    )
+
+    try:
+        with urlopen(request, timeout=30) as response:
+            response_body = response.read().decode("utf-8")
+
+            if not response_body:
+                return None
+
+            user_data = json.loads(response_body)
+
+            if not isinstance(user_data, dict):
+                return None
+
+            user_id = user_data.get("id")
+
+            if not isinstance(user_id, str) or not user_id.strip():
+                return None
+
+            return user_data
+
+    except Exception as e:
+        print(f"Supabase auth user lookup error: {e}")
+        return None
+
+
+def delete_supabase_auth_user(user_id: str) -> None:
+    if not is_supabase_configured():
+        raise RuntimeError("Supabase is not configured.")
+
+    clean_user_id = user_id.strip()
+
+    if not clean_user_id:
+        raise RuntimeError("Missing Supabase user id.")
+
+    encoded_user_id = quote(clean_user_id, safe="")
+
+    url = f"{SUPABASE_URL}/auth/v1/admin/users/{encoded_user_id}"
+
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    request = Request(
+        url=url,
+        headers=headers,
+        method="DELETE",
+    )
+
+    try:
+        with urlopen(request, timeout=30) as response:
+            response.read()
+
+    except HTTPError as e:
+        error_body = e.read().decode("utf-8")
+        raise RuntimeError(
+            f"Supabase delete auth user HTTP error {e.code}: {error_body}"
+        ) from e
+
+    except URLError as e:
+        raise RuntimeError(f"Supabase delete auth user URL error: {e}") from e
 
 
 def create_embedding(client: OpenAI, text: str) -> list[float]:
@@ -1852,8 +1947,53 @@ def get_knowledge_base():
     return {"count": len(entries), "entries": entries}
 
 
+@app.delete("/api/account")
+def delete_account(
+    authorization: str | None = Header(default=None),
+):
+    supabase_user = get_supabase_user_from_access_token(authorization)
+
+    if not supabase_user:
+        raise HTTPException(
+            status_code=401,
+            detail="User is not authenticated.",
+        )
+
+    raw_user_id = supabase_user.get("id")
+
+    if not isinstance(raw_user_id, str) or not raw_user_id.strip():
+        raise HTTPException(
+            status_code=401,
+            detail="Could not read authenticated user id.",
+        )
+
+    memory_owner_id = build_memory_owner_id(
+        user_id=raw_user_id,
+        guest_id=None,
+    )
+
+    try:
+        clear_user_memory(memory_owner_id)
+        delete_supabase_auth_user(raw_user_id)
+
+        return {
+            "message": "Account deleted.",
+            "memoryOwnerId": memory_owner_id,
+        }
+
+    except Exception as e:
+        print(f"Delete account error: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Could not delete account.",
+        )
+
+
 @app.post("/api/chat")
-def chat(request: ChatRequest):
+def chat(
+    request: ChatRequest,
+    authorization: str | None = Header(default=None),
+):
     model_name = os.getenv("AZURE_OPENAI_MODEL")
 
     if not os.getenv("AZURE_OPENAI_API_KEY"):
@@ -1881,8 +2021,18 @@ def chat(request: ChatRequest):
 
     app_language = request.appLanguage or "Hrvatski"
 
+    supabase_user = get_supabase_user_from_access_token(authorization)
+
+    supabase_user_id = None
+
+    if supabase_user:
+        raw_user_id = supabase_user.get("id")
+
+        if isinstance(raw_user_id, str):
+            supabase_user_id = raw_user_id
+
     memory_owner_id = build_memory_owner_id(
-        user_id=None,
+        user_id=supabase_user_id,
         guest_id=request.guestId,
     )
 
@@ -1890,6 +2040,16 @@ def chat(request: ChatRequest):
         "MEMORY OWNER DEBUG:",
         {
             "guestId": request.guestId,
+            "memory_owner_id": memory_owner_id,
+        },
+    )
+
+    print(
+        "AUTH DEBUG:",
+        {
+            "has_authorization_header": bool(authorization),
+            "has_supabase_user": bool(supabase_user),
+            "supabase_user_id": supabase_user_id,
             "memory_owner_id": memory_owner_id,
         },
     )

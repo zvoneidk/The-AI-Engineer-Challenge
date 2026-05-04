@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import { supabase } from "@/lib/supabaseClient";
 
 type RagSource = {
   id: string;
@@ -13,6 +14,11 @@ type ChatMessage = {
   role: "user" | "assistant";
   content: string;
   ragSources?: RagSource[];
+};
+
+type AuthUser = {
+  id: string;
+  email?: string;
 };
 
 type AppLanguage = "Hrvatski" | "English" | "Deutsch";
@@ -54,6 +60,15 @@ function getOrCreateGuestId() {
   return guestId;
 }
 
+function getChatStorageKey(userId?: string) {
+  if (userId) {
+    return `mental-coach-chat-history:user:${userId}`;
+  }
+
+  const guestId = getOrCreateGuestId();
+  return `mental-coach-chat-history:guest:${guestId}`;
+}
+
 const translations = {
   Hrvatski: {
     badge: "AI mentalni trener",
@@ -86,7 +101,7 @@ const translations = {
     memoryCleared: "Memorija ovog browsera je obrisana.",
     ragSourcesLabel: "Korištena baza znanja",
     guestMemoryNotice:
-      "Nisi prijavljen. Memorija je spremljena samo za ovaj browser. Prijava će kasnije omogućiti sigurnu memoriju na svim uređajima.",
+      "Nisi prijavljen. Memorija je spremljena samo za ovaj browser. Prijava omogućuje sigurnu memoriju na svim uređajima.",
 
     toneCalm: "Smiren",
     toneMotivating: "Motivirajući",
@@ -195,7 +210,7 @@ const translations = {
     memoryCleared: "This browser's memory has been cleared.",
     ragSourcesLabel: "Knowledge base used",
     guestMemoryNotice:
-      "You are not signed in. Memory is saved only for this browser. Signing in later will allow secure memory across devices.",
+      "You are not signed in. Memory is saved only for this browser. Signing in allows secure memory across devices.",
 
     toneCalm: "Calm",
     toneMotivating: "Motivating",
@@ -305,7 +320,7 @@ const translations = {
     memoryCleared: "Der Speicher dieses Browsers wurde gelöscht.",
     ragSourcesLabel: "Verwendete Wissensbasis",
     guestMemoryNotice:
-      "Du bist nicht angemeldet. Der Speicher wird nur für diesen Browser gespeichert. Eine spätere Anmeldung ermöglicht sicheren Speicher auf allen Geräten.",
+      "Du bist nicht angemeldet. Der Speicher wird nur für diesen Browser gespeichert. Eine Anmeldung ermöglicht sicheren Speicher auf allen Geräten.",
 
     toneCalm: "Ruhig",
     toneMotivating: "Motivierend",
@@ -434,6 +449,17 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authMessage, setAuthMessage] = useState("");
+  const [isPasswordRecovery, setIsPasswordRecovery] = useState(false);
+
+  const [activeChatStorageKey, setActiveChatStorageKey] = useState("");
+  const [chatLoaded, setChatLoaded] = useState(false);
+
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
   const [tone, setTone] = useState<Tone>("Smiren");
@@ -449,15 +475,18 @@ export default function Home() {
   };
 
   useEffect(() => {
-    const savedMessages = localStorage.getItem("mental-coach-chat-history");
+    const oldSharedChatHistory = localStorage.getItem("mental-coach-chat-history");
+
+    if (oldSharedChatHistory) {
+      localStorage.removeItem("mental-coach-chat-history");
+    }
+
     const savedTone = localStorage.getItem("mental-coach-tone");
     const savedAnswerLength = localStorage.getItem("mental-coach-answer-length");
     const savedResponseFormat = localStorage.getItem(
       "mental-coach-response-format"
     );
     const savedAppLanguage = localStorage.getItem("mental-coach-app-language");
-
-    setMessages(safeParseMessages(savedMessages));
 
     if (isValidTone(savedTone)) {
       setTone(savedTone);
@@ -485,11 +514,24 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    localStorage.setItem(
-      "mental-coach-chat-history",
-      JSON.stringify(messages)
-    );
-  }, [messages]);
+    const nextChatStorageKey = getChatStorageKey(authUser?.id);
+
+    setChatLoaded(false);
+    setActiveChatStorageKey(nextChatStorageKey);
+
+    const savedMessages = localStorage.getItem(nextChatStorageKey);
+    setMessages(safeParseMessages(savedMessages));
+
+    setMessage("");
+    setError("");
+    setChatLoaded(true);
+  }, [authUser?.id]);
+
+  useEffect(() => {
+    if (!chatLoaded || !activeChatStorageKey) return;
+
+    localStorage.setItem(activeChatStorageKey, JSON.stringify(messages));
+  }, [messages, activeChatStorageKey, chatLoaded]);
 
   useEffect(() => {
     localStorage.setItem("mental-coach-tone", tone);
@@ -501,6 +543,292 @@ export default function Home() {
   useEffect(() => {
     scrollToBottom();
   }, [messages, loading]);
+
+  useEffect(() => {
+    const loadSession = async () => {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      if (!session?.user) {
+        setAuthUser(null);
+        return;
+      }
+
+      const { data, error } = await supabase.auth.getUser();
+
+      if (error || !data.user) {
+        await supabase.auth.signOut({ scope: "local" });
+        setAuthUser(null);
+        return;
+      }
+
+      setAuthUser({
+        id: data.user.id,
+        email: data.user.email || undefined,
+      });
+    };
+
+    loadSession();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === "PASSWORD_RECOVERY") {
+        setIsPasswordRecovery(true);
+        setAuthMessage(
+          appLanguage === "English"
+            ? "Enter your new password."
+            : appLanguage === "Deutsch"
+            ? "Gib dein neues Passwort ein."
+            : "Upiši novu lozinku."
+        );
+      }
+
+      if (session?.user) {
+        setAuthUser({
+          id: session.user.id,
+          email: session.user.email || undefined,
+        });
+      } else {
+        setAuthUser(null);
+      }
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, [appLanguage]);
+
+  const handleRegister = async () => {
+    if (!authEmail.trim() || !authPassword.trim() || authLoading) return;
+
+    setAuthLoading(true);
+    setError("");
+    setAuthMessage("");
+
+    try {
+      const redirectUrl = window.location.origin;
+
+      const { error } = await supabase.auth.signUp({
+        email: authEmail.trim(),
+        password: authPassword,
+        options: {
+          emailRedirectTo: redirectUrl,
+        },
+      });
+
+      if (error) {
+        throw error;
+      }
+
+      setAuthMessage(
+        appLanguage === "English"
+          ? "If this email is new, registration was started. If you already have an account, log in or reset your password."
+          : appLanguage === "Deutsch"
+          ? "Wenn diese E-Mail neu ist, wurde die Registrierung gestartet. Wenn du bereits ein Konto hast, melde dich an oder setze dein Passwort zurück."
+          : "Ako je ovaj email novi, registracija je pokrenuta. Ako račun već postoji, prijavi se ili resetiraj lozinku."
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t.unknownError);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleLogin = async () => {
+    if (!authEmail.trim() || !authPassword.trim() || authLoading) return;
+
+    setAuthLoading(true);
+    setError("");
+    setAuthMessage("");
+
+    try {
+      const { error } = await supabase.auth.signInWithPassword({
+        email: authEmail.trim(),
+        password: authPassword,
+      });
+
+      if (error) {
+        throw error;
+      }
+
+      setAuthMessage(
+        appLanguage === "English"
+          ? "Login successful."
+          : appLanguage === "Deutsch"
+          ? "Anmeldung erfolgreich."
+          : "Prijava uspješna."
+      );
+
+      setAuthPassword("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t.unknownError);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handlePasswordReset = async () => {
+    if (!authEmail.trim() || authLoading) return;
+
+    setAuthLoading(true);
+    setError("");
+    setAuthMessage("");
+
+    try {
+      const redirectUrl = window.location.origin;
+
+      const { error } = await supabase.auth.resetPasswordForEmail(
+        authEmail.trim(),
+        {
+          redirectTo: redirectUrl,
+        }
+      );
+
+      if (error) {
+        throw error;
+      }
+
+      setAuthMessage(
+        appLanguage === "English"
+          ? "If this email has an account, a password reset link has been sent."
+          : appLanguage === "Deutsch"
+          ? "Wenn es für diese E-Mail ein Konto gibt, wurde ein Link zum Zurücksetzen des Passworts gesendet."
+          : "Ako za ovaj email postoji račun, poslan je link za reset lozinke."
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t.unknownError);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleUpdatePassword = async () => {
+    if (!newPassword.trim() || authLoading) return;
+
+    setAuthLoading(true);
+    setError("");
+    setAuthMessage("");
+
+    try {
+      const { error } = await supabase.auth.updateUser({
+        password: newPassword,
+      });
+
+      if (error) {
+        throw error;
+      }
+
+      setNewPassword("");
+      setIsPasswordRecovery(false);
+
+      setAuthMessage(
+        appLanguage === "English"
+          ? "Password updated successfully. You can now use your new password."
+          : appLanguage === "Deutsch"
+          ? "Passwort erfolgreich geändert. Du kannst jetzt dein neues Passwort verwenden."
+          : "Lozinka je uspješno promijenjena. Sada možeš koristiti novu lozinku."
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t.unknownError);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    setAuthLoading(true);
+    setError("");
+    setAuthMessage("");
+
+    try {
+      const { error } = await supabase.auth.signOut();
+
+      if (error) {
+        throw error;
+      }
+
+      setAuthUser(null);
+      setAuthPassword("");
+      setNewPassword("");
+      setIsPasswordRecovery(false);
+
+      setAuthMessage(
+        appLanguage === "English"
+          ? "Logged out."
+          : appLanguage === "Deutsch"
+          ? "Abgemeldet."
+          : "Odjavljen/a si."
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t.unknownError);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleDeleteAccount = async () => {
+    if (!authUser || authLoading) return;
+
+    const confirmed = window.confirm(
+      appLanguage === "English"
+        ? "Are you sure you want to delete your account? This will permanently delete your account and saved memory."
+        : appLanguage === "Deutsch"
+        ? "Bist du sicher, dass du dein Konto löschen möchtest? Dein Konto und gespeicherter Speicher werden dauerhaft gelöscht."
+        : "Jesi li siguran/sigurna da želiš obrisati račun? Račun i spremljena memorija bit će trajno obrisani."
+    );
+
+    if (!confirmed) return;
+
+    setAuthLoading(true);
+    setError("");
+    setAuthMessage("");
+
+    try {
+      const userChatStorageKey = getChatStorageKey(authUser.id);
+
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+
+      if (session?.access_token) {
+        headers.Authorization = `Bearer ${session.access_token}`;
+      }
+
+      const res = await fetch(`${apiUrl}/api/account`, {
+        method: "DELETE",
+        headers,
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.detail || t.errorFallback);
+      }
+
+      localStorage.removeItem(userChatStorageKey);
+
+      await supabase.auth.signOut({ scope: "local" });
+
+      setAuthUser(null);
+      setAuthEmail("");
+      setAuthPassword("");
+      setNewPassword("");
+      setIsPasswordRecovery(false);
+      setError("");
+      setAuthMessage("");
+
+      window.location.href = window.location.origin;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t.unknownError);
+      setAuthLoading(false);
+    }
+  };
 
   const handleSend = async () => {
     if (!message.trim() || loading) return;
@@ -515,6 +843,8 @@ export default function Home() {
       content: currentMessage,
     };
 
+    const chatHistoryForRequest = messages.slice(-20);
+
     setMessages((previousMessages) => [...previousMessages, userMessage]);
 
     setLoading(true);
@@ -522,14 +852,24 @@ export default function Home() {
     setMessage("");
 
     try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+
+      if (session?.access_token) {
+        headers.Authorization = `Bearer ${session.access_token}`;
+      }
+
       const res = await fetch(`${apiUrl}/api/chat`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers,
         body: JSON.stringify({
           message: currentMessage,
-          chatHistory: messages.slice(-20),
+          chatHistory: chatHistoryForRequest,
           tone,
           answerLength,
           responseFormat,
@@ -567,7 +907,10 @@ export default function Home() {
     setMessage("");
     setMessages([]);
     setError("");
-    localStorage.removeItem("mental-coach-chat-history");
+
+    if (activeChatStorageKey) {
+      localStorage.removeItem(activeChatStorageKey);
+    }
   };
 
   const handleClearMemory = async () => {
@@ -773,9 +1116,182 @@ export default function Home() {
               {loading ? t.sending : t.send}
             </button>
 
-            <div className="mt-3 rounded-2xl border border-yellow-400/20 bg-yellow-500/10 p-3 text-xs text-yellow-100">
-              {t.guestMemoryNotice}
+            <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-3">
+              <h2 className="mb-3 text-base font-semibold">
+                {appLanguage === "English"
+                  ? "Account"
+                  : appLanguage === "Deutsch"
+                  ? "Konto"
+                  : "Račun"}
+              </h2>
+
+              {isPasswordRecovery ? (
+                <div className="space-y-3">
+                  <p className="text-xs text-white/70">
+                    {appLanguage === "English"
+                      ? "Enter a new password for your account."
+                      : appLanguage === "Deutsch"
+                      ? "Gib ein neues Passwort für dein Konto ein."
+                      : "Upiši novu lozinku za svoj račun."}
+                  </p>
+
+                  <input
+                    type="password"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    placeholder={
+                      appLanguage === "English"
+                        ? "New password"
+                        : appLanguage === "Deutsch"
+                        ? "Neues Passwort"
+                        : "Nova lozinka"
+                    }
+                    autoComplete="new-password"
+                    className="w-full rounded-xl border border-white/10 bg-black/50 p-2 text-sm text-white outline-none placeholder:text-white/40 focus:border-blue-400/60"
+                  />
+
+                  <button
+                    onClick={handleUpdatePassword}
+                    disabled={authLoading}
+                    className="w-full rounded-xl bg-blue-600 px-3 py-2 text-xs font-medium text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {authLoading
+                      ? appLanguage === "English"
+                        ? "Saving..."
+                        : appLanguage === "Deutsch"
+                        ? "Speichern..."
+                        : "Spremam..."
+                      : appLanguage === "English"
+                      ? "Save new password"
+                      : appLanguage === "Deutsch"
+                      ? "Neues Passwort speichern"
+                      : "Spremi novu lozinku"}
+                  </button>
+                </div>
+              ) : authUser ? (
+                <div className="space-y-3">
+                  <p className="text-xs text-white/70">
+                    {appLanguage === "English"
+                      ? `Signed in as ${authUser.email || authUser.id}`
+                      : appLanguage === "Deutsch"
+                      ? `Angemeldet als ${authUser.email || authUser.id}`
+                      : `Prijavljen/a kao ${authUser.email || authUser.id}`}
+                  </p>
+
+                  <button
+                    onClick={handleLogout}
+                    disabled={authLoading}
+                    className="w-full rounded-xl border border-white/10 px-3 py-2 text-xs text-white/80 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {authLoading
+                      ? appLanguage === "English"
+                        ? "Please wait..."
+                        : appLanguage === "Deutsch"
+                        ? "Bitte warten..."
+                        : "Pričekaj..."
+                      : appLanguage === "English"
+                      ? "Log out"
+                      : appLanguage === "Deutsch"
+                      ? "Abmelden"
+                      : "Odjava"}
+                  </button>
+
+                  <button
+                    onClick={handleDeleteAccount}
+                    disabled={authLoading}
+                    className="w-full rounded-xl border border-red-400/30 px-3 py-2 text-xs text-red-200 transition hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {authLoading
+                      ? appLanguage === "English"
+                        ? "Please wait..."
+                        : appLanguage === "Deutsch"
+                        ? "Bitte warten..."
+                        : "Pričekaj..."
+                      : appLanguage === "English"
+                      ? "Delete account"
+                      : appLanguage === "Deutsch"
+                      ? "Konto löschen"
+                      : "Obriši račun"}
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <input
+                    type="email"
+                    name="mental-coach-email"
+                    value={authEmail}
+                    onChange={(e) => setAuthEmail(e.target.value)}
+                    placeholder="email@example.com"
+                    autoComplete="off"
+                    className="w-full rounded-xl border border-white/10 bg-black/50 p-2 text-sm text-white outline-none placeholder:text-white/40 focus:border-blue-400/60"
+                  />
+
+                  <input
+                    type="password"
+                    name="mental-coach-password"
+                    value={authPassword}
+                    onChange={(e) => setAuthPassword(e.target.value)}
+                    placeholder={
+                      appLanguage === "English"
+                        ? "Password"
+                        : appLanguage === "Deutsch"
+                        ? "Passwort"
+                        : "Lozinka"
+                    }
+                    autoComplete="new-password"
+                    className="w-full rounded-xl border border-white/10 bg-black/50 p-2 text-sm text-white outline-none placeholder:text-white/40 focus:border-blue-400/60"
+                  />
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={handleLogin}
+                      disabled={authLoading}
+                      className="rounded-xl bg-blue-600 px-3 py-2 text-xs font-medium text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {appLanguage === "English"
+                        ? "Log in"
+                        : appLanguage === "Deutsch"
+                        ? "Anmelden"
+                        : "Prijava"}
+                    </button>
+
+                    <button
+                      onClick={handleRegister}
+                      disabled={authLoading}
+                      className="rounded-xl border border-white/10 px-3 py-2 text-xs text-white/80 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {appLanguage === "English"
+                        ? "Register"
+                        : appLanguage === "Deutsch"
+                        ? "Registrieren"
+                        : "Registracija"}
+                    </button>
+                  </div>
+
+                  <button
+                    onClick={handlePasswordReset}
+                    disabled={authLoading}
+                    className="w-full rounded-xl border border-yellow-400/20 px-3 py-2 text-xs text-yellow-100 transition hover:bg-yellow-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {appLanguage === "English"
+                      ? "Forgot password?"
+                      : appLanguage === "Deutsch"
+                      ? "Passwort vergessen?"
+                      : "Zaboravio/la si lozinku?"}
+                  </button>
+                </div>
+              )}
+
+              {authMessage && (
+                <p className="mt-3 text-xs text-emerald-200">{authMessage}</p>
+              )}
             </div>
+
+            {!authUser && !isPasswordRecovery && (
+              <div className="mt-3 rounded-2xl border border-yellow-400/20 bg-yellow-500/10 p-3 text-xs text-yellow-100">
+                {t.guestMemoryNotice}
+              </div>
+            )}
 
             <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-3">
               <h2 className="mb-3 text-base font-semibold">
