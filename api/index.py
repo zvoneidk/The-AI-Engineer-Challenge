@@ -1258,28 +1258,63 @@ def build_language_warning(app_language: str, detected_language: str) -> str | N
     if detected_language == app_language:
         return None
 
-    if app_language == "Hrvatski":
-        return (
-            "Jezik aplikacije trenutno je postavljen na hrvatski. "
-            "Ako želiš drugi jezik, promijeni jezik aplikacije u postavkama mentalnog trenera. "
-            "Trenutno možeš odabrati hrvatski, engleski ili njemački."
-        )
+    app_language_names_hr = {
+        "Hrvatski": "hrvatski",
+        "English": "engleski",
+        "Deutsch": "njemački",
+    }
 
-    if app_language == "English":
+    app_language_names_en = {
+        "Hrvatski": "Croatian",
+        "English": "English",
+        "Deutsch": "German",
+    }
+
+    app_language_names_de = {
+        "Hrvatski": "Kroatisch",
+        "English": "Englisch",
+        "Deutsch": "Deutsch",
+    }
+
+    hr_app_language = app_language_names_hr.get(app_language, app_language)
+    en_app_language = app_language_names_en.get(app_language, app_language)
+    de_app_language = app_language_names_de.get(app_language, app_language)
+
+    if detected_language == "Unsupported":
         return (
-            "The app language is currently set to English. "
+            "The language of your message is currently not supported in this app. "
+            f"The app language is set to {en_app_language}. "
             "If you want another language, change the app language in the mental coach settings. "
             "You can currently choose Croatian, English, or German."
         )
 
-    if app_language == "Deutsch":
+    if detected_language == "Hrvatski":
         return (
-            "Die App-Sprache ist derzeit auf Deutsch eingestellt. "
+            f"Jezik aplikacije trenutno je postavljen na {hr_app_language}. "
+            "Ako želiš drugi jezik, promijeni jezik aplikacije u postavkama mentalnog trenera. "
+            "Trenutno možeš odabrati hrvatski, engleski ili njemački."
+        )
+
+    if detected_language == "English":
+        return (
+            f"The app language is currently set to {en_app_language}. "
+            "If you want another language, change the app language in the mental coach settings. "
+            "You can currently choose Croatian, English, or German."
+        )
+
+    if detected_language == "Deutsch":
+        return (
+            f"Die App-Sprache ist derzeit auf {de_app_language} eingestellt. "
             "Wenn du eine andere Sprache möchtest, ändere die App-Sprache in den Einstellungen des Mentaltrainers. "
             "Du kannst derzeit Kroatisch, Englisch oder Deutsch auswählen."
         )
 
-    return None
+    return (
+        "The language of your message is currently not supported in this app. "
+        f"The app language is set to {en_app_language}. "
+        "If you want another language, change the app language in the mental coach settings. "
+        "You can currently choose Croatian, English, or German."
+    )
 
 
 def build_unknown_language_context(app_language: str) -> str:
