@@ -73,8 +73,7 @@ const translations = {
   Hrvatski: {
     badge: "AI mentalni trener",
     title: "Treniraj svoj um, jedan miran korak po korak.",
-    subtitle:
-      "Dobij mentalnu vježbu, podršku prije ispita, pomoć kod stresa ili pripremu za prezentaciju i razgovor za posao.",
+    subtitle: "Razgovaraj, smiri misli i pripremi se za sljedeći korak.",
     moodTitle: "Kako se danas osjećaš?",
     suggestionsTitle: "Možeš probati pitati:",
     chatTitle: "Razgovor",
@@ -99,6 +98,8 @@ const translations = {
     errorFallback: "Dogodila se greška.",
     unknownError: "Nepoznata greška.",
     memoryCleared: "Memorija ovog browsera je obrisana.",
+    userMemoryCleared:
+      "Memorija računa i trenutni razgovor su obrisani. Krenimo ispočetka.",
     ragSourcesLabel: "Korištena baza znanja",
     guestMemoryNotice:
       "Nisi prijavljen. Memorija je spremljena samo za ovaj browser. Prijava omogućuje sigurnu memoriju na svim uređajima.",
@@ -182,8 +183,7 @@ const translations = {
   English: {
     badge: "AI mental coach",
     title: "Train your mind, one calm step at a time.",
-    subtitle:
-      "Get a mental exercise, support before exams, help with stress, or preparation for presentations and job interviews.",
+    subtitle: "Talk, calm your thoughts, and prepare for your next step.",
     moodTitle: "How are you feeling today?",
     suggestionsTitle: "You can try asking:",
     chatTitle: "Conversation",
@@ -208,6 +208,8 @@ const translations = {
     errorFallback: "Something went wrong.",
     unknownError: "Unknown error.",
     memoryCleared: "This browser's memory has been cleared.",
+    userMemoryCleared:
+      "Account memory and the current conversation have been cleared. Let's start fresh.",
     ragSourcesLabel: "Knowledge base used",
     guestMemoryNotice:
       "You are not signed in. Memory is saved only for this browser. Signing in allows secure memory across devices.",
@@ -290,7 +292,7 @@ const translations = {
     badge: "KI-Mentaltrainer",
     title: "Trainiere deinen Geist, einen ruhigen Schritt nach dem anderen.",
     subtitle:
-      "Erhalte eine mentale Übung, Unterstützung vor Prüfungen, Hilfe bei Stress oder Vorbereitung auf Präsentationen und Vorstellungsgespräche.",
+      "Sprich, beruhige deine Gedanken und bereite dich auf deinen nächsten Schritt vor.",
     moodTitle: "Wie fühlst du dich heute?",
     suggestionsTitle: "Du kannst zum Beispiel fragen:",
     chatTitle: "Gespräch",
@@ -318,6 +320,8 @@ const translations = {
     errorFallback: "Ein Fehler ist aufgetreten.",
     unknownError: "Unbekannter Fehler.",
     memoryCleared: "Der Speicher dieses Browsers wurde gelöscht.",
+    userMemoryCleared:
+      "Der Kontospeicher und das aktuelle Gespräch wurden gelöscht. Wir starten neu.",
     ragSourcesLabel: "Verwendete Wissensbasis",
     guestMemoryNotice:
       "Du bist nicht angemeldet. Der Speicher wird nur für diesen Browser gespeichert. Eine Anmeldung ermöglicht sicheren Speicher auf allen Geräten.",
@@ -475,7 +479,9 @@ export default function Home() {
   };
 
   useEffect(() => {
-    const oldSharedChatHistory = localStorage.getItem("mental-coach-chat-history");
+    const oldSharedChatHistory = localStorage.getItem(
+      "mental-coach-chat-history"
+    );
 
     if (oldSharedChatHistory) {
       localStorage.removeItem("mental-coach-chat-history");
@@ -919,12 +925,29 @@ export default function Home() {
     try {
       const guestId = getOrCreateGuestId();
 
-      console.log("CLEARING MEMORY FOR GUEST ID:", guestId);
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+
+      if (session?.access_token) {
+        headers.Authorization = `Bearer ${session.access_token}`;
+      }
+
+      console.log("CLEARING MEMORY:", {
+        isLoggedIn: Boolean(session?.access_token),
+        guestId,
+        authUserId: authUser?.id,
+      });
 
       const res = await fetch(
         `${apiUrl}/api/memory?guestId=${encodeURIComponent(guestId)}`,
         {
           method: "DELETE",
+          headers,
         }
       );
 
@@ -936,42 +959,41 @@ export default function Home() {
         throw new Error(data.detail || t.errorFallback);
       }
 
+      if (activeChatStorageKey) {
+        localStorage.removeItem(activeChatStorageKey);
+      }
+
+      setMessage("");
+
       const assistantMessage: ChatMessage = {
         role: "assistant",
-        content: t.memoryCleared,
+        content: authUser ? t.userMemoryCleared : t.memoryCleared,
         ragSources: [],
       };
 
-      setMessages((previousMessages) => [
-        ...previousMessages,
-        assistantMessage,
-      ]);
+      setMessages([assistantMessage]);
     } catch (err) {
       setError(err instanceof Error ? err.message : t.unknownError);
     }
   };
 
   return (
-    <main className="relative min-h-screen overflow-hidden bg-white text-white">
+    <main className="relative min-h-screen overflow-x-hidden overflow-y-auto bg-white text-white">
       <div
-        className="absolute inset-0 bg-contain bg-left bg-no-repeat opacity-95"
+        className="absolute inset-0 bg-cover bg-center bg-no-repeat opacity-30 sm:opacity-50 lg:bg-contain lg:bg-left lg:opacity-95"
         style={{ backgroundImage: "url('/mental-coaching1.jpg')" }}
       />
 
-      <div className="absolute inset-0 bg-gradient-to-r from-white/0 via-slate-900/45 to-black/90" />
+      <div className="absolute inset-0 bg-gradient-to-b from-black/75 via-slate-950/80 to-black/95 lg:bg-gradient-to-r lg:from-white/0 lg:via-slate-900/45 lg:to-black/90" />
 
-      <div className="absolute right-20 top-0 h-96 w-96 rounded-full bg-blue-500/20 blur-3xl" />
+      <div className="absolute right-0 top-0 h-72 w-72 rounded-full bg-blue-500/20 blur-3xl sm:right-20 sm:h-96 sm:w-96" />
 
-      <div className="relative z-10 flex min-h-screen w-full items-center justify-end p-6 pl-[420px]">
-        <div className="grid w-full max-w-4xl gap-6 lg:grid-cols-[1fr_1.3fr]">
-          <section className="rounded-3xl border border-white/10 bg-black/55 p-6 shadow-2xl backdrop-blur-md">
+      <div className="relative z-10 flex min-h-screen w-full items-start justify-center p-4 sm:p-6 lg:items-center lg:justify-end lg:pl-[420px]">
+        <div className="grid w-full max-w-5xl gap-4 sm:gap-2 lg:grid-cols-[0.95fr_1.25fr]">
+          <section className="rounded-3xl border border-white/10 bg-black/60 p-4 shadow-2xl backdrop-blur-md sm:p-6">
             <p className="mb-3 inline-flex rounded-full border border-blue-400/30 bg-blue-400/10 px-3 py-1 text-xs text-blue-200">
               {t.badge}
             </p>
-
-            <h1 className="mb-3 text-3xl font-bold tracking-tight">
-              {t.title}
-            </h1>
 
             <p className="mb-5 text-sm text-white/75">{t.subtitle}</p>
 
@@ -1008,115 +1030,8 @@ export default function Home() {
                 ))}
               </div>
             </div>
-          </section>
 
-          <section className="rounded-3xl border border-white/10 bg-black/60 p-6 shadow-2xl backdrop-blur-md">
-            <div className="mb-4 flex items-center justify-between gap-4">
-              <div>
-                <h2 className="text-2xl font-bold">{t.chatTitle}</h2>
-                <p className="text-xs text-white/60">{t.chatSubtitle}</p>
-              </div>
-
-              <div className="flex flex-col gap-2 sm:flex-row">
-                <button
-                  onClick={handleClear}
-                  className="rounded-xl border border-white/10 px-3 py-2 text-xs text-white/70 transition hover:bg-white/10 hover:text-white"
-                >
-                  {t.clearChat}
-                </button>
-
-                <button
-                  onClick={handleClearMemory}
-                  className="rounded-xl border border-red-400/20 px-3 py-2 text-xs text-red-200/80 transition hover:bg-red-500/10 hover:text-red-100"
-                >
-                  {t.clearMemory}
-                </button>
-              </div>
-            </div>
-
-            <div className="mb-4 max-h-72 space-y-3 overflow-y-auto rounded-2xl border border-white/10 bg-black/30 p-4">
-              {messages.length === 0 && (
-                <p className="text-xs text-white/50">{t.emptyChat}</p>
-              )}
-
-              {messages.map((chatMessage, index) => (
-                <div
-                  key={index}
-                  className={`rounded-2xl p-3 text-sm ${
-                    chatMessage.role === "user"
-                      ? "ml-auto max-w-[85%] bg-blue-600/80 text-white"
-                      : "mr-auto max-w-[90%] border border-blue-400/20 bg-black/45 text-white/90"
-                  }`}
-                >
-                  <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-white/60">
-                    {chatMessage.role === "user"
-                      ? t.userLabel
-                      : t.assistantLabel}
-                  </p>
-
-                  <div className="prose prose-invert prose-sm max-w-none whitespace-pre-wrap leading-relaxed">
-                    <ReactMarkdown>{chatMessage.content}</ReactMarkdown>
-                  </div>
-
-                  {chatMessage.role === "assistant" &&
-                    chatMessage.ragSources &&
-                    chatMessage.ragSources.length > 0 && (
-                      <div className="mt-3 rounded-xl border border-emerald-400/20 bg-emerald-500/10 p-2">
-                        <p className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-emerald-200">
-                          {t.ragSourcesLabel}
-                        </p>
-
-                        <div className="flex flex-wrap gap-2">
-                          {chatMessage.ragSources.map((source) => (
-                            <span
-                              key={source.id}
-                              className="rounded-full border border-emerald-300/20 bg-black/30 px-2 py-1 text-[10px] text-emerald-100"
-                            >
-                              {source.title}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                </div>
-              ))}
-
-              {loading && (
-                <div className="mr-auto max-w-[90%] rounded-2xl border border-white/10 bg-black/45 p-3 text-sm text-white/70">
-                  {t.thinking}
-                </div>
-              )}
-
-              <div ref={chatEndRef} />
-            </div>
-
-            <textarea
-              className="w-full min-h-28 rounded-2xl border border-white/10 bg-black/50 p-3 text-sm text-white outline-none placeholder:text-white/40 focus:border-blue-400/60"
-              placeholder={t.placeholder}
-              value={message}
-              onChange={(e) => setMessage(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-
-                  if (!loading) {
-                    handleSend();
-                  }
-                }
-              }}
-            />
-
-            <p className="mt-2 text-xs text-white/45">{t.enterHint}</p>
-
-            <button
-              onClick={handleSend}
-              disabled={loading}
-              className="mt-3 w-full rounded-2xl bg-blue-600 px-5 py-3 text-sm font-medium transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {loading ? t.sending : t.send}
-            </button>
-
-            <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-3">
+            <div className="mt-5 rounded-2xl border border-white/10 bg-white/5 p-4">
               <h2 className="mb-3 text-base font-semibold">
                 {appLanguage === "English"
                   ? "Account"
@@ -1131,7 +1046,7 @@ export default function Home() {
                     {appLanguage === "English"
                       ? "Enter a new password for your account."
                       : appLanguage === "Deutsch"
-                      ? "Gib ein neues Passwort für dein Konto ein."
+                      ? "Gib dein neues Passwort für dein Konto ein."
                       : "Upiši novu lozinku za svoj račun."}
                   </p>
 
@@ -1170,7 +1085,7 @@ export default function Home() {
                 </div>
               ) : authUser ? (
                 <div className="space-y-3">
-                  <p className="text-xs text-white/70">
+                  <p className="break-words text-xs text-white/70">
                     {appLanguage === "English"
                       ? `Signed in as ${authUser.email || authUser.id}`
                       : appLanguage === "Deutsch"
@@ -1242,7 +1157,7 @@ export default function Home() {
                     className="w-full rounded-xl border border-white/10 bg-black/50 p-2 text-sm text-white outline-none placeholder:text-white/40 focus:border-blue-400/60"
                   />
 
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                     <button
                       onClick={handleLogin}
                       disabled={authLoading}
@@ -1285,6 +1200,12 @@ export default function Home() {
               {authMessage && (
                 <p className="mt-3 text-xs text-emerald-200">{authMessage}</p>
               )}
+
+              {error && (
+                <p className="mt-3 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-300">
+                  {error}
+                </p>
+              )}
             </div>
 
             {!authUser && !isPasswordRecovery && (
@@ -1292,13 +1213,120 @@ export default function Home() {
                 {t.guestMemoryNotice}
               </div>
             )}
+          </section>
+
+          <section className="rounded-3xl border border-white/10 bg-black/65 p-4 shadow-2xl backdrop-blur-md sm:p-6">
+            <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 className="text-2xl font-bold">{t.chatTitle}</h2>
+                <p className="text-xs text-white/60">{t.chatSubtitle}</p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-row">
+                <button
+                  onClick={handleClear}
+                  className="rounded-xl border border-white/10 px-3 py-2 text-xs text-white/70 transition hover:bg-white/10 hover:text-white"
+                >
+                  {t.clearChat}
+                </button>
+
+                <button
+                  onClick={handleClearMemory}
+                  className="rounded-xl border border-red-400/20 px-3 py-2 text-xs text-red-200/80 transition hover:bg-red-500/10 hover:text-red-100"
+                >
+                  {t.clearMemory}
+                </button>
+              </div>
+            </div>
+
+            <div className="mb-4 max-h-[45vh] space-y-3 overflow-y-auto rounded-2xl border border-white/10 bg-black/30 p-3 sm:max-h-72 sm:p-4">
+              {messages.length === 0 && (
+                <p className="text-xs text-white/50">{t.emptyChat}</p>
+              )}
+
+              {messages.map((chatMessage, index) => (
+                <div
+                  key={index}
+                  className={`rounded-2xl p-3 text-sm ${
+                    chatMessage.role === "user"
+                      ? "ml-auto max-w-[92%] bg-blue-600/80 text-white sm:max-w-[85%]"
+                      : "mr-auto max-w-[94%] border border-blue-400/20 bg-black/45 text-white/90 sm:max-w-[90%]"
+                  }`}
+                >
+                  <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-white/60">
+                    {chatMessage.role === "user"
+                      ? t.userLabel
+                      : t.assistantLabel}
+                  </p>
+
+                  <div className="prose prose-invert prose-sm max-w-none whitespace-pre-wrap break-words leading-relaxed">
+                    <ReactMarkdown>{chatMessage.content}</ReactMarkdown>
+                  </div>
+
+                  {chatMessage.role === "assistant" &&
+                    chatMessage.ragSources &&
+                    chatMessage.ragSources.length > 0 && (
+                      <div className="mt-3 rounded-xl border border-emerald-400/20 bg-emerald-500/10 p-2">
+                        <p className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-emerald-200">
+                          {t.ragSourcesLabel}
+                        </p>
+
+                        <div className="flex flex-wrap gap-2">
+                          {chatMessage.ragSources.map((source) => (
+                            <span
+                              key={source.id}
+                              className="rounded-full border border-emerald-300/20 bg-black/30 px-2 py-1 text-[10px] text-emerald-100"
+                            >
+                              {source.title}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                </div>
+              ))}
+
+              {loading && (
+                <div className="mr-auto max-w-[90%] rounded-2xl border border-white/10 bg-black/45 p-3 text-sm text-white/70">
+                  {t.thinking}
+                </div>
+              )}
+
+              <div ref={chatEndRef} />
+            </div>
+
+            <textarea
+              className="min-h-24 w-full rounded-2xl border border-white/10 bg-black/50 p-3 text-sm text-white outline-none placeholder:text-white/40 focus:border-blue-400/60 sm:min-h-28"
+              placeholder={t.placeholder}
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+
+                  if (!loading) {
+                    handleSend();
+                  }
+                }
+              }}
+            />
+
+            <p className="mt-2 text-xs text-white/45">{t.enterHint}</p>
+
+            <button
+              onClick={handleSend}
+              disabled={loading}
+              className="mt-3 w-full rounded-2xl bg-blue-600 px-5 py-3 text-sm font-medium transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {loading ? t.sending : t.send}
+            </button>
 
             <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-3">
               <h2 className="mb-3 text-base font-semibold">
                 {t.settingsTitle}
               </h2>
 
-              <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                 <label className="block text-xs text-white/70">
                   {t.tone}
                   <select
@@ -1372,7 +1400,7 @@ export default function Home() {
                 {t.quickExercises}
               </h2>
 
-              <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                 {t.quickActions.map((action) => (
                   <button
                     key={action.label}
@@ -1384,12 +1412,6 @@ export default function Home() {
                 ))}
               </div>
             </div>
-
-            {error && (
-              <div className="mt-4 rounded-2xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">
-                {error}
-              </div>
-            )}
           </section>
         </div>
       </div>

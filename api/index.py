@@ -1901,9 +1901,22 @@ def root():
 
 
 @app.get("/api/memory")
-def get_memory(guestId: str | None = Query(default=None)):
+def get_memory(
+    guestId: str | None = Query(default=None),
+    authorization: str | None = Header(default=None),
+):
+    supabase_user = get_supabase_user_from_access_token(authorization)
+
+    supabase_user_id = None
+
+    if supabase_user:
+        raw_user_id = supabase_user.get("id")
+
+        if isinstance(raw_user_id, str):
+            supabase_user_id = raw_user_id
+
     memory_owner_id = build_memory_owner_id(
-        user_id=None,
+        user_id=supabase_user_id,
         guest_id=guestId,
     )
 
@@ -1919,6 +1932,7 @@ def get_memory(guestId: str | None = Query(default=None)):
 def clear_memory(
     guestId: str | None = Query(default=None),
     memory_request: MemoryRequest | None = Body(default=None),
+    authorization: str | None = Header(default=None),
 ):
     body_guest_id = None
 
@@ -1927,9 +1941,30 @@ def clear_memory(
 
     effective_guest_id = guestId or body_guest_id
 
+    supabase_user = get_supabase_user_from_access_token(authorization)
+
+    supabase_user_id = None
+
+    if supabase_user:
+        raw_user_id = supabase_user.get("id")
+
+        if isinstance(raw_user_id, str):
+            supabase_user_id = raw_user_id
+
     memory_owner_id = build_memory_owner_id(
-        user_id=None,
+        user_id=supabase_user_id,
         guest_id=effective_guest_id,
+    )
+
+    print(
+        "CLEAR MEMORY DEBUG:",
+        {
+            "has_authorization_header": bool(authorization),
+            "has_supabase_user": bool(supabase_user),
+            "supabase_user_id": supabase_user_id,
+            "guestId": effective_guest_id,
+            "memory_owner_id": memory_owner_id,
+        },
     )
 
     clear_user_memory(memory_owner_id)
