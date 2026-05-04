@@ -547,14 +547,14 @@ export default function Home() {
   }, [tone, answerLength, responseFormat, appLanguage]);
 
   useEffect(() => {
-  const isMobile = window.innerWidth < 768;
+    const isMobile = window.innerWidth < 768;
 
-  if (isMobile) {
-    return;
-  }
+    if (isMobile) {
+      return;
+    }
 
-  scrollToBottom();
-}, [messages, loading]);
+    scrollToBottom();
+  }, [messages, loading]);
 
   useEffect(() => {
     const loadSession = async () => {
@@ -996,15 +996,15 @@ export default function Home() {
 
       <div className="relative z-10 flex min-h-screen w-full items-start justify-center p-4 sm:p-6 lg:items-center lg:justify-end lg:pl-[420px]">
         <div className="grid w-full max-w-4xl min-w-0 gap-4 sm:gap-3 lg:grid-cols-[0.95fr_1.25fr]">
-          <section className="min-w-0 rounded-3xl border border-white/10 bg-black/60 p-4 shadow-2xl backdrop-blur-md sm:p-6">
-            <p className="mb-3 inline-flex rounded-full border border-blue-400/30 bg-blue-400/10 px-3 py-1 text-xs text-blue-200">
+          <section className="min-w-0 rounded-3xl border border-white/10 bg-black/60 p-4 shadow-2xl backdrop-blur-md sm:p-4">
+            <p className="mb-2 inline-flex rounded-full border border-blue-400/30 bg-blue-400/10 px-3 py-1 text-xs text-blue-200">
               {t.badge}
             </p>
 
-            <p className="mb-5 text-sm text-white/75">{t.subtitle}</p>
+            <p className="mb-3 text-sm text-white/75">{t.subtitle}</p>
 
-            <div className="mb-5 rounded-2xl border border-white/10 bg-white/5 p-4">
-              <h2 className="mb-3 text-base font-semibold">{t.moodTitle}</h2>
+            <div className="mb-3 rounded-2xl border border-white/10 bg-white/5 p-3">
+              <h2 className="mb-2 text-base font-semibold">{t.moodTitle}</h2>
 
               <div className="flex flex-wrap gap-2">
                 {t.moods.map((item) => (
@@ -1019,8 +1019,8 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-              <h2 className="mb-3 text-base font-semibold">
+            <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
+              <h2 className="mb-2 text-base font-semibold">
                 {t.suggestionsTitle}
               </h2>
 
@@ -1037,8 +1037,8 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="mt-5 rounded-2xl border border-white/10 bg-white/5 p-4">
-              <h2 className="mb-3 text-base font-semibold">
+            <div className="mt-3 rounded-2xl border border-white/10 bg-white/5 p-3">
+              <h2 className="mb-2 text-base font-semibold">
                 {appLanguage === "English"
                   ? "Account"
                   : appLanguage === "Deutsch"
@@ -1047,7 +1047,7 @@ export default function Home() {
               </h2>
 
               {isPasswordRecovery ? (
-                <div className="space-y-3">
+                <div className="space-y-2">
                   <p className="text-xs text-white/70">
                     {appLanguage === "English"
                       ? "Enter a new password for your account."
@@ -1090,7 +1090,7 @@ export default function Home() {
                   </button>
                 </div>
               ) : authUser ? (
-                <div className="space-y-3">
+                <div className="space-y-2">
                   <p className="break-words text-xs text-white/70 [overflow-wrap:anywhere]">
                     {appLanguage === "English"
                       ? `Signed in as ${authUser.email || authUser.id}`
@@ -1136,7 +1136,7 @@ export default function Home() {
                   </button>
                 </div>
               ) : (
-                <div className="space-y-3">
+                <div className="space-y-2">
                   <input
                     type="email"
                     name="mental-coach-email"
@@ -1204,11 +1204,11 @@ export default function Home() {
               )}
 
               {authMessage && (
-                <p className="mt-3 text-xs text-emerald-200">{authMessage}</p>
+                <p className="mt-2 text-xs text-emerald-200">{authMessage}</p>
               )}
 
               {error && (
-                <p className="mt-3 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-300">
+                <p className="mt-2 rounded-xl border border-red-500/30 bg-red-500/10 p-2 text-xs text-red-300">
                   {error}
                 </p>
               )}
@@ -1221,8 +1221,8 @@ export default function Home() {
             )}
           </section>
 
-          <section className="min-w-0 rounded-3xl border border-white/10 bg-black/65 p-4 shadow-2xl backdrop-blur-md sm:p-6">
-            <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <section className="min-w-0 rounded-3xl border border-white/10 bg-black/65 p-4 shadow-2xl backdrop-blur-md sm:p-4">
+            <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0">
                 <h2 className="text-2xl font-bold">{t.chatTitle}</h2>
                 <p className="text-xs text-white/60">{t.chatSubtitle}</p>
@@ -1245,7 +1245,7 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="mb-4 max-h-[45vh] min-w-0 space-y-3 overflow-y-auto rounded-2xl border border-white/10 bg-black/30 p-3 sm:max-h-72 sm:p-4">
+            <div className="mb-3 max-h-[34vh] min-w-0 space-y-2 overflow-y-auto rounded-2xl border border-white/10 bg-black/30 p-3 sm:max-h-52">
               {messages.length === 0 && (
                 <p className="text-xs text-white/50">{t.emptyChat}</p>
               )}
@@ -1302,7 +1302,7 @@ export default function Home() {
             </div>
 
             <textarea
-              className="min-h-24 w-full rounded-2xl border border-white/10 bg-black/50 p-3 text-sm text-white outline-none placeholder:text-white/40 focus:border-blue-400/60 sm:min-h-28"
+              className="min-h-16 w-full rounded-2xl border border-white/10 bg-black/50 p-3 text-sm text-white outline-none placeholder:text-white/40 focus:border-blue-400/60 sm:min-h-20"
               placeholder={t.placeholder}
               value={message}
               onChange={(e) => setMessage(e.target.value)}
@@ -1317,22 +1317,22 @@ export default function Home() {
               }}
             />
 
-            <p className="mt-2 text-xs text-white/45">{t.enterHint}</p>
+            <p className="mt-1 text-xs text-white/45">{t.enterHint}</p>
 
             <button
               onClick={handleSend}
               disabled={loading}
-              className="mt-3 w-full rounded-2xl bg-blue-600 px-5 py-3 text-sm font-medium transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+              className="mt-2 w-full rounded-2xl bg-blue-600 px-5 py-2.5 text-sm font-medium transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {loading ? t.sending : t.send}
             </button>
 
-            <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-3">
-              <h2 className="mb-3 text-base font-semibold">
+            <div className="mt-3 rounded-2xl border border-white/10 bg-white/5 p-3">
+              <h2 className="mb-2 text-base font-semibold">
                 {t.settingsTitle}
               </h2>
 
-              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              <div className="grid gap-3 sm:grid-cols-2">
                 <label className="block text-xs text-white/70">
                   {t.tone}
                   <select
@@ -1401,8 +1401,8 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-3">
-              <h2 className="mb-3 text-base font-semibold">
+            <div className="mt-3 rounded-2xl border border-white/10 bg-white/5 p-3">
+              <h2 className="mb-2 text-base font-semibold">
                 {t.quickExercises}
               </h2>
 
