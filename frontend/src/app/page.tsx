@@ -47,6 +47,13 @@ const validResponseFormats: ResponseFormat[] = [
 
 const validAppLanguages: AppLanguage[] = ["Hrvatski", "English", "Deutsch"];
 
+const backgroundImages = ["/slika1.jfif", "/slika2.jfif", "/slika3.jpg"];
+
+const backgroundSounds = ["/zvuk1.mp3", "/zvuk2.mp3", "/zvuk3.mp3"];
+
+const soundVolume = 0.25;
+const crossfadeDurationMs = 5000;
+
 function getOrCreateGuestId() {
   const storageKey = "mental-coach-guest-id";
 
@@ -121,6 +128,9 @@ const translations = {
     formatOneTask: "Jedan konkretan zadatak",
 
     noReply: "Nema odgovora.",
+
+    soundOn: "Zvuk uključen",
+    soundOff: "Uključi zvuk",
 
     moods: [
       {
@@ -231,6 +241,9 @@ const translations = {
     formatOneTask: "One concrete task",
 
     noReply: "No reply.",
+
+    soundOn: "Sound on",
+    soundOff: "Turn sound on",
 
     moods: [
       {
@@ -344,6 +357,9 @@ const translations = {
 
     noReply: "Keine Antwort.",
 
+    soundOn: "Ton an",
+    soundOff: "Ton einschalten",
+
     moods: [
       {
         label: "Gestresst",
@@ -445,6 +461,42 @@ function safeParseMessages(value: string | null): ChatMessage[] {
   }
 }
 
+function fadeAudio(
+  audio: HTMLAudioElement,
+  fromVolume: number,
+  toVolume: number,
+  durationMs: number
+) {
+  const steps = 60;
+  const stepDuration = durationMs / steps;
+
+  audio.volume = fromVolume;
+
+  let currentStep = 0;
+
+  const interval = window.setInterval(() => {
+    currentStep += 1;
+
+    const progress = currentStep / steps;
+
+    const easedProgress =
+      progress < 0.5
+        ? 2 * progress * progress
+        : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+
+    const nextVolume = fromVolume + (toVolume - fromVolume) * easedProgress;
+
+    audio.volume = Math.min(1, Math.max(0, nextVolume));
+
+    if (currentStep >= steps) {
+      audio.volume = toVolume;
+      window.clearInterval(interval);
+    }
+  }, stepDuration);
+
+  return interval;
+}
+
 export default function Home() {
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
@@ -452,6 +504,12 @@ export default function Home() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [backgroundIndex, setBackgroundIndex] = useState(0);
+  const [soundEnabled, setSoundEnabled] = useState(false);
+
+  const [openPanel, setOpenPanel] = useState<"account" | "settings" | null>(
+    null
+  );
 
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
@@ -466,6 +524,11 @@ export default function Home() {
 
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
+  const audioRefA = useRef<HTMLAudioElement | null>(null);
+  const audioRefB = useRef<HTMLAudioElement | null>(null);
+  const activeAudioRef = useRef<"A" | "B">("A");
+  const lastPlayedSoundIndexRef = useRef<number | null>(null);
+
   const [tone, setTone] = useState<Tone>("Smiren");
   const [answerLength, setAnswerLength] = useState<AnswerLength>("Kratko");
   const [responseFormat, setResponseFormat] =
@@ -477,6 +540,96 @@ export default function Home() {
   const scrollToBottom = () => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
+
+  const toggleSound = async () => {
+    const audioA = audioRefA.current;
+    const audioB = audioRefB.current;
+
+    if (!audioA || !audioB) return;
+
+    if (soundEnabled) {
+      fadeAudio(audioA, audioA.volume, 0, 1200);
+      fadeAudio(audioB, audioB.volume, 0, 1200);
+
+      window.setTimeout(() => {
+        audioA.pause();
+        audioB.pause();
+        audioA.currentTime = 0;
+        audioB.currentTime = 0;
+      }, 1300);
+
+      setSoundEnabled(false);
+      return;
+    }
+
+    try {
+      audioA.src = backgroundSounds[backgroundIndex];
+      audioA.loop = true;
+      audioA.volume = 0;
+      audioA.currentTime = 0;
+
+      await audioA.play();
+
+      fadeAudio(audioA, 0, soundVolume, crossfadeDurationMs);
+
+      activeAudioRef.current = "A";
+      lastPlayedSoundIndexRef.current = backgroundIndex;
+      setSoundEnabled(true);
+    } catch {
+      setSoundEnabled(false);
+    }
+  };
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      setBackgroundIndex((currentIndex) => {
+        return (currentIndex + 1) % backgroundImages.length;
+      });
+    }, 30000);
+
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!soundEnabled) return;
+
+    if (lastPlayedSoundIndexRef.current === backgroundIndex) return;
+
+    const currentAudio =
+      activeAudioRef.current === "A" ? audioRefA.current : audioRefB.current;
+
+    const nextAudio =
+      activeAudioRef.current === "A" ? audioRefB.current : audioRefA.current;
+
+    if (!currentAudio || !nextAudio) return;
+
+    nextAudio.src = backgroundSounds[backgroundIndex];
+    nextAudio.loop = true;
+    nextAudio.volume = 0;
+    nextAudio.currentTime = 0;
+
+    nextAudio
+      .play()
+      .then(() => {
+        fadeAudio(currentAudio, currentAudio.volume, 0, crossfadeDurationMs);
+
+        fadeAudio(nextAudio, 0, soundVolume, crossfadeDurationMs);
+
+        window.setTimeout(() => {
+          currentAudio.pause();
+          currentAudio.currentTime = 0;
+        }, crossfadeDurationMs + 200);
+
+        activeAudioRef.current = activeAudioRef.current === "A" ? "B" : "A";
+
+        lastPlayedSoundIndexRef.current = backgroundIndex;
+      })
+      .catch(() => {
+        setSoundEnabled(false);
+      });
+  }, [backgroundIndex, soundEnabled]);
 
   useEffect(() => {
     const oldSharedChatHistory = localStorage.getItem(
@@ -595,6 +748,8 @@ export default function Home() {
             ? "Gib dein neues Passwort ein."
             : "Upiši novu lozinku."
         );
+
+        setOpenPanel("account");
       }
 
       if (session?.user) {
@@ -984,19 +1139,25 @@ export default function Home() {
   };
 
   return (
-    <main className="relative min-h-screen overflow-x-hidden overflow-y-auto bg-white text-white">
-      <div
-        className="absolute inset-0 bg-cover bg-center bg-no-repeat opacity-30 sm:opacity-50 lg:bg-contain lg:bg-left lg:opacity-95"
-        style={{ backgroundImage: "url('/mental-coaching1.jpg')" }}
-      />
+    <main className="relative h-screen overflow-hidden bg-white text-white">
+      {backgroundImages.map((image, index) => (
+        <div
+          key={image}
+          className={`absolute inset-0 bg-cover bg-center bg-no-repeat transition-opacity duration-[2500ms] ease-in-out ${
+            index === backgroundIndex ? "opacity-100" : "opacity-0"
+          }`}
+          style={{
+            backgroundImage: `url('${image}')`,
+          }}
+        />
+      ))}
 
-      <div className="absolute inset-0 bg-gradient-to-b from-black/75 via-slate-950/80 to-black/95 lg:bg-gradient-to-r lg:from-white/0 lg:via-slate-900/45 lg:to-black/90" />
+      <audio ref={audioRefA} preload="auto" />
+      <audio ref={audioRefB} preload="auto" />
 
-      <div className="absolute right-0 top-0 h-72 w-72 rounded-full bg-blue-500/20 blur-3xl sm:right-20 sm:h-96 sm:w-96" />
-
-      <div className="relative z-10 flex min-h-screen w-full items-start justify-center p-4 sm:p-6 lg:items-center lg:justify-end lg:pl-[420px]">
-        <div className="grid w-full max-w-4xl min-w-0 gap-4 sm:gap-3 lg:grid-cols-[0.95fr_1.25fr]">
-          <section className="min-w-0 rounded-3xl border border-white/10 bg-black/60 p-4 shadow-2xl backdrop-blur-md sm:p-4">
+      <div className="relative z-10 flex h-screen w-full items-stretch justify-center overflow-hidden p-4 sm:p-6">
+        <div className="grid h-full w-full max-w-7xl min-w-0 gap-4 overflow-hidden sm:gap-3 lg:grid-cols-[0.65fr_1.85fr]">
+          <section className="min-h-0 min-w-0 overflow-y-auto rounded-3xl border border-white/30 bg-black/55 p-4 shadow-2xl backdrop-blur-md sm:p-4">
             <p className="mb-2 inline-flex rounded-full border border-blue-400/30 bg-blue-400/10 px-3 py-1 text-xs text-blue-200">
               {t.badge}
             </p>
@@ -1039,180 +1200,335 @@ export default function Home() {
 
             <div className="mt-3 rounded-2xl border border-white/10 bg-white/5 p-3">
               <h2 className="mb-2 text-base font-semibold">
-                {appLanguage === "English"
-                  ? "Account"
-                  : appLanguage === "Deutsch"
-                  ? "Konto"
-                  : "Račun"}
+                {t.quickExercises}
               </h2>
 
-              {isPasswordRecovery ? (
-                <div className="space-y-2">
-                  <p className="text-xs text-white/70">
-                    {appLanguage === "English"
-                      ? "Enter a new password for your account."
-                      : appLanguage === "Deutsch"
-                      ? "Gib dein neues Passwort für dein Konto ein."
-                      : "Upiši novu lozinku za svoj račun."}
-                  </p>
-
-                  <input
-                    type="password"
-                    value={newPassword}
-                    onChange={(e) => setNewPassword(e.target.value)}
-                    placeholder={
-                      appLanguage === "English"
-                        ? "New password"
-                        : appLanguage === "Deutsch"
-                        ? "Neues Passwort"
-                        : "Nova lozinka"
-                    }
-                    autoComplete="new-password"
-                    className="w-full rounded-xl border border-white/10 bg-black/50 p-2 text-sm text-white outline-none placeholder:text-white/40 focus:border-blue-400/60"
-                  />
-
+              <div className="grid grid-cols-1 gap-2">
+                {t.quickActions.map((action) => (
                   <button
-                    onClick={handleUpdatePassword}
-                    disabled={authLoading}
-                    className="w-full rounded-xl bg-blue-600 px-3 py-2 text-xs font-medium text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+                    key={action.label}
+                    onClick={() => setMessage(action.prompt)}
+                    className="rounded-2xl border border-white/10 bg-blue-500/10 p-2 text-left text-xs text-white/85 transition hover:border-blue-300/50 hover:bg-blue-500/20"
                   >
-                    {authLoading
-                      ? appLanguage === "English"
-                        ? "Saving..."
-                        : appLanguage === "Deutsch"
-                        ? "Speichern..."
-                        : "Spremam..."
-                      : appLanguage === "English"
-                      ? "Save new password"
-                      : appLanguage === "Deutsch"
-                      ? "Neues Passwort speichern"
-                      : "Spremi novu lozinku"}
+                    {action.label}
                   </button>
-                </div>
-              ) : authUser ? (
-                <div className="space-y-2">
-                  <p className="break-words text-xs text-white/70 [overflow-wrap:anywhere]">
-                    {appLanguage === "English"
-                      ? `Signed in as ${authUser.email || authUser.id}`
-                      : appLanguage === "Deutsch"
-                      ? `Angemeldet als ${authUser.email || authUser.id}`
-                      : `Prijavljen/a kao ${authUser.email || authUser.id}`}
-                  </p>
+                ))}
+              </div>
+            </div>
 
-                  <button
-                    onClick={handleLogout}
-                    disabled={authLoading}
-                    className="w-full rounded-xl border border-white/10 px-3 py-2 text-xs text-white/80 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {authLoading
-                      ? appLanguage === "English"
-                        ? "Please wait..."
-                        : appLanguage === "Deutsch"
-                        ? "Bitte warten..."
-                        : "Pričekaj..."
-                      : appLanguage === "English"
-                      ? "Log out"
-                      : appLanguage === "Deutsch"
-                      ? "Abmelden"
-                      : "Odjava"}
-                  </button>
+            <div className="mt-3 rounded-2xl border border-white/10 bg-white/5 p-3">
+              <h2 className="mb-2 text-base font-semibold">
+                {appLanguage === "English"
+                  ? "Account and settings"
+                  : appLanguage === "Deutsch"
+                  ? "Konto und Einstellungen"
+                  : "Račun i postavke"}
+              </h2>
 
-                  <button
-                    onClick={handleDeleteAccount}
-                    disabled={authLoading}
-                    className="w-full rounded-xl border border-red-400/30 px-3 py-2 text-xs text-red-200 transition hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {authLoading
-                      ? appLanguage === "English"
-                        ? "Please wait..."
-                        : appLanguage === "Deutsch"
-                        ? "Bitte warten..."
-                        : "Pričekaj..."
-                      : appLanguage === "English"
-                      ? "Delete account"
-                      : appLanguage === "Deutsch"
-                      ? "Konto löschen"
-                      : "Obriši račun"}
-                  </button>
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  <input
-                    type="email"
-                    name="mental-coach-email"
-                    value={authEmail}
-                    onChange={(e) => setAuthEmail(e.target.value)}
-                    placeholder="email@example.com"
-                    autoComplete="off"
-                    className="w-full rounded-xl border border-white/10 bg-black/50 p-2 text-sm text-white outline-none placeholder:text-white/40 focus:border-blue-400/60"
-                  />
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={() =>
+                    setOpenPanel(openPanel === "account" ? null : "account")
+                  }
+                  className={`rounded-xl border px-3 py-2 text-xs transition ${
+                    openPanel === "account"
+                      ? "border-blue-300/50 bg-blue-500/20 text-white"
+                      : "border-white/10 text-white/70 hover:bg-white/10 hover:text-white"
+                  }`}
+                >
+                  {appLanguage === "English"
+                    ? "Account"
+                    : appLanguage === "Deutsch"
+                    ? "Konto"
+                    : "Račun"}
+                </button>
 
-                  <input
-                    type="password"
-                    name="mental-coach-password"
-                    value={authPassword}
-                    onChange={(e) => setAuthPassword(e.target.value)}
-                    placeholder={
-                      appLanguage === "English"
-                        ? "Password"
-                        : appLanguage === "Deutsch"
-                        ? "Passwort"
-                        : "Lozinka"
-                    }
-                    autoComplete="new-password"
-                    className="w-full rounded-xl border border-white/10 bg-black/50 p-2 text-sm text-white outline-none placeholder:text-white/40 focus:border-blue-400/60"
-                  />
+                <button
+                  onClick={() =>
+                    setOpenPanel(openPanel === "settings" ? null : "settings")
+                  }
+                  className={`rounded-xl border px-3 py-2 text-xs transition ${
+                    openPanel === "settings"
+                      ? "border-blue-300/50 bg-blue-500/20 text-white"
+                      : "border-white/10 text-white/70 hover:bg-white/10 hover:text-white"
+                  }`}
+                >
+                  {appLanguage === "English"
+                    ? "Settings"
+                    : appLanguage === "Deutsch"
+                    ? "Einstellungen"
+                    : "Postavke"}
+                </button>
+              </div>
+            </div>
 
-                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                    <button
-                      onClick={handleLogin}
-                      disabled={authLoading}
-                      className="rounded-xl bg-blue-600 px-3 py-2 text-xs font-medium text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
+            {openPanel === "account" && (
+              <div className="mt-3 rounded-2xl border border-white/10 bg-white/5 p-3">
+                <h2 className="mb-2 text-base font-semibold">
+                  {appLanguage === "English"
+                    ? "Account"
+                    : appLanguage === "Deutsch"
+                    ? "Konto"
+                    : "Račun"}
+                </h2>
+
+                {isPasswordRecovery ? (
+                  <div className="space-y-2">
+                    <p className="text-xs text-white/70">
                       {appLanguage === "English"
-                        ? "Log in"
+                        ? "Enter a new password for your account."
                         : appLanguage === "Deutsch"
-                        ? "Anmelden"
-                        : "Prijava"}
-                    </button>
+                        ? "Gib dein neues Passwort für dein Konto ein."
+                        : "Upiši novu lozinku za svoj račun."}
+                    </p>
+
+                    <input
+                      type="password"
+                      value={newPassword}
+                      onChange={(e) => setNewPassword(e.target.value)}
+                      placeholder={
+                        appLanguage === "English"
+                          ? "New password"
+                          : appLanguage === "Deutsch"
+                          ? "Neues Passwort"
+                          : "Nova lozinka"
+                      }
+                      autoComplete="new-password"
+                      className="w-full rounded-xl border border-white/10 bg-black/50 p-2 text-sm text-white outline-none placeholder:text-white/40 focus:border-blue-400/60"
+                    />
 
                     <button
-                      onClick={handleRegister}
+                      onClick={handleUpdatePassword}
                       disabled={authLoading}
-                      className="rounded-xl border border-white/10 px-3 py-2 text-xs text-white/80 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+                      className="w-full rounded-xl bg-blue-600 px-3 py-2 text-xs font-medium text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      {appLanguage === "English"
-                        ? "Register"
+                      {authLoading
+                        ? appLanguage === "English"
+                          ? "Saving..."
+                          : appLanguage === "Deutsch"
+                          ? "Speichern..."
+                          : "Spremam..."
+                        : appLanguage === "English"
+                        ? "Save new password"
                         : appLanguage === "Deutsch"
-                        ? "Registrieren"
-                        : "Registracija"}
+                        ? "Neues Passwort speichern"
+                        : "Spremi novu lozinku"}
                     </button>
                   </div>
+                ) : authUser ? (
+                  <div className="space-y-2">
+                    <p className="break-words text-xs text-white/70 [overflow-wrap:anywhere]">
+                      {appLanguage === "English"
+                        ? `Signed in as ${authUser.email || authUser.id}`
+                        : appLanguage === "Deutsch"
+                        ? `Angemeldet als ${authUser.email || authUser.id}`
+                        : `Prijavljen/a kao ${authUser.email || authUser.id}`}
+                    </p>
+
+                    <button
+                      onClick={handleLogout}
+                      disabled={authLoading}
+                      className="w-full rounded-xl border border-white/10 px-3 py-2 text-xs text-white/80 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {authLoading
+                        ? appLanguage === "English"
+                          ? "Please wait..."
+                          : appLanguage === "Deutsch"
+                          ? "Bitte warten..."
+                          : "Pričekaj..."
+                        : appLanguage === "English"
+                        ? "Log out"
+                        : appLanguage === "Deutsch"
+                        ? "Abmelden"
+                        : "Odjava"}
+                    </button>
+
+                    <button
+                      onClick={handleDeleteAccount}
+                      disabled={authLoading}
+                      className="w-full rounded-xl border border-red-400/30 px-3 py-2 text-xs text-red-200 transition hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {authLoading
+                        ? appLanguage === "English"
+                          ? "Please wait..."
+                          : appLanguage === "Deutsch"
+                          ? "Bitte warten..."
+                          : "Pričekaj..."
+                        : appLanguage === "English"
+                        ? "Delete account"
+                        : appLanguage === "Deutsch"
+                        ? "Konto löschen"
+                        : "Obriši račun"}
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <input
+                      type="email"
+                      name="mental-coach-email"
+                      value={authEmail}
+                      onChange={(e) => setAuthEmail(e.target.value)}
+                      placeholder="email@example.com"
+                      autoComplete="off"
+                      className="w-full rounded-xl border border-white/10 bg-black/50 p-2 text-sm text-white outline-none placeholder:text-white/40 focus:border-blue-400/60"
+                    />
+
+                    <input
+                      type="password"
+                      name="mental-coach-password"
+                      value={authPassword}
+                      onChange={(e) => setAuthPassword(e.target.value)}
+                      placeholder={
+                        appLanguage === "English"
+                          ? "Password"
+                          : appLanguage === "Deutsch"
+                          ? "Passwort"
+                          : "Lozinka"
+                      }
+                      autoComplete="new-password"
+                      className="w-full rounded-xl border border-white/10 bg-black/50 p-2 text-sm text-white outline-none placeholder:text-white/40 focus:border-blue-400/60"
+                    />
+
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                      <button
+                        onClick={handleLogin}
+                        disabled={authLoading}
+                        className="rounded-xl bg-blue-600 px-3 py-2 text-xs font-medium text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {appLanguage === "English"
+                          ? "Log in"
+                          : appLanguage === "Deutsch"
+                          ? "Anmelden"
+                          : "Prijava"}
+                      </button>
+
+                      <button
+                        onClick={handleRegister}
+                        disabled={authLoading}
+                        className="rounded-xl border border-white/10 px-3 py-2 text-xs text-white/80 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {appLanguage === "English"
+                          ? "Register"
+                          : appLanguage === "Deutsch"
+                          ? "Registrieren"
+                          : "Registracija"}
+                      </button>
+                    </div>
+
+                    <button
+                      onClick={handlePasswordReset}
+                      disabled={authLoading}
+                      className="w-full rounded-xl border border-yellow-400/20 px-3 py-2 text-xs text-yellow-100 transition hover:bg-yellow-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {appLanguage === "English"
+                        ? "Forgot password?"
+                        : appLanguage === "Deutsch"
+                        ? "Passwort vergessen?"
+                        : "Zaboravio/la si lozinku?"}
+                    </button>
+                  </div>
+                )}
+
+                {authMessage && (
+                  <p className="mt-2 text-xs text-emerald-200">
+                    {authMessage}
+                  </p>
+                )}
+
+                {error && (
+                  <p className="mt-2 rounded-xl border border-red-500/30 bg-red-500/10 p-2 text-xs text-red-300">
+                    {error}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {openPanel === "settings" && (
+              <div className="mt-3 rounded-2xl border border-white/10 bg-white/5 p-3">
+                <h2 className="mb-2 text-base font-semibold">
+                  {t.settingsTitle}
+                </h2>
+
+                <div className="grid gap-3">
+                  <label className="block text-xs text-white/70">
+                    {t.tone}
+                    <select
+                      value={tone}
+                      onChange={(e) => setTone(e.target.value as Tone)}
+                      className="mt-1 w-full rounded-xl border border-white/10 bg-black/50 p-2 text-sm text-white outline-none focus:border-blue-400/60"
+                    >
+                      <option value="Smiren">{t.toneCalm}</option>
+                      <option value="Motivirajući">{t.toneMotivating}</option>
+                      <option value="Direktan">{t.toneDirect}</option>
+                      <option value="Nježan">{t.toneGentle}</option>
+                    </select>
+                  </label>
+
+                  <label className="block text-xs text-white/70">
+                    {t.length}
+                    <select
+                      value={answerLength}
+                      onChange={(e) =>
+                        setAnswerLength(e.target.value as AnswerLength)
+                      }
+                      className="mt-1 w-full rounded-xl border border-white/10 bg-black/50 p-2 text-sm text-white outline-none focus:border-blue-400/60"
+                    >
+                      <option value="Kratko">{t.lengthShort}</option>
+                      <option value="Srednje">{t.lengthMedium}</option>
+                      <option value="Dugačko">{t.lengthLong}</option>
+                    </select>
+                  </label>
+
+                  <label className="block text-xs text-white/70">
+                    {t.format}
+                    <select
+                      value={responseFormat}
+                      onChange={(e) =>
+                        setResponseFormat(e.target.value as ResponseFormat)
+                      }
+                      className="mt-1 w-full rounded-xl border border-white/10 bg-black/50 p-2 text-sm text-white outline-none focus:border-blue-400/60"
+                    >
+                      <option value="Slobodno">{t.formatFree}</option>
+                      <option value="U 3 koraka">{t.formatThreeSteps}</option>
+                      <option value="Kratka vježba">{t.formatExercise}</option>
+                      <option value="Pitanja za refleksiju">
+                        {t.formatReflection}
+                      </option>
+                      <option value="Mini plan">{t.formatMiniPlan}</option>
+                      <option value="Jedan konkretan zadatak">
+                        {t.formatOneTask}
+                      </option>
+                    </select>
+                  </label>
+
+                  <label className="block text-xs text-white/70">
+                    {t.language}
+                    <select
+                      value={appLanguage}
+                      onChange={(e) =>
+                        setAppLanguage(e.target.value as AppLanguage)
+                      }
+                      className="mt-1 w-full rounded-xl border border-white/10 bg-black/50 p-2 text-sm text-white outline-none focus:border-blue-400/60"
+                    >
+                      <option value="Hrvatski">Hrvatski</option>
+                      <option value="English">English</option>
+                      <option value="Deutsch">Deutsch</option>
+                    </select>
+                  </label>
 
                   <button
-                    onClick={handlePasswordReset}
-                    disabled={authLoading}
-                    className="w-full rounded-xl border border-yellow-400/20 px-3 py-2 text-xs text-yellow-100 transition hover:bg-yellow-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                    onClick={toggleSound}
+                    className={`w-full rounded-2xl border px-3 py-2 text-xs transition ${
+                      soundEnabled
+                        ? "border-emerald-300/40 bg-emerald-500/20 text-emerald-100"
+                        : "border-white/10 bg-black/30 text-white/80 hover:bg-white/10"
+                    }`}
                   >
-                    {appLanguage === "English"
-                      ? "Forgot password?"
-                      : appLanguage === "Deutsch"
-                      ? "Passwort vergessen?"
-                      : "Zaboravio/la si lozinku?"}
+                    {soundEnabled ? t.soundOn : t.soundOff}
                   </button>
                 </div>
-              )}
-
-              {authMessage && (
-                <p className="mt-2 text-xs text-emerald-200">{authMessage}</p>
-              )}
-
-              {error && (
-                <p className="mt-2 rounded-xl border border-red-500/30 bg-red-500/10 p-2 text-xs text-red-300">
-                  {error}
-                </p>
-              )}
-            </div>
+              </div>
+            )}
 
             {!authUser && !isPasswordRecovery && (
               <div className="mt-3 rounded-2xl border border-yellow-400/20 bg-yellow-500/10 p-3 text-xs text-yellow-100">
@@ -1221,14 +1537,14 @@ export default function Home() {
             )}
           </section>
 
-          <section className="min-w-0 rounded-3xl border border-white/10 bg-black/65 p-4 shadow-2xl backdrop-blur-md sm:p-4">
+          <section className="flex min-h-0 min-w-0 flex-col rounded-3xl border border-white/30 bg-black/60 p-4 shadow-2xl backdrop-blur-md sm:p-4">
             <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0">
                 <h2 className="text-2xl font-bold">{t.chatTitle}</h2>
                 <p className="text-xs text-white/60">{t.chatSubtitle}</p>
               </div>
 
-              <div className="grid shrink-0 grid-cols-2 gap-2 sm:flex sm:flex-row">
+              <div className="grid shrink-0 grid-cols-2 gap-2 sm:flex sm:flex-row sm:flex-wrap sm:justify-end">
                 <button
                   onClick={handleClear}
                   className="rounded-xl border border-white/10 px-3 py-2 text-xs text-white/70 transition hover:bg-white/10 hover:text-white"
@@ -1245,7 +1561,7 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="mb-3 max-h-[34vh] min-w-0 space-y-2 overflow-y-auto rounded-2xl border border-white/10 bg-black/30 p-3 sm:max-h-52">
+            <div className="mb-3 min-h-0 min-w-0 flex-1 space-y-2 overflow-y-auto rounded-2xl border border-white/10 bg-black/30 p-3">
               {messages.length === 0 && (
                 <p className="text-xs text-white/50">{t.emptyChat}</p>
               )}
@@ -1302,7 +1618,7 @@ export default function Home() {
             </div>
 
             <textarea
-              className="min-h-16 w-full rounded-2xl border border-white/10 bg-black/50 p-3 text-sm text-white outline-none placeholder:text-white/40 focus:border-blue-400/60 sm:min-h-20"
+              className="min-h-16 w-full shrink-0 rounded-2xl border border-white/10 bg-black/50 p-3 text-sm text-white outline-none placeholder:text-white/40 focus:border-blue-400/60 sm:min-h-20"
               placeholder={t.placeholder}
               value={message}
               onChange={(e) => setMessage(e.target.value)}
@@ -1317,107 +1633,17 @@ export default function Home() {
               }}
             />
 
-            <p className="mt-1 text-xs text-white/45">{t.enterHint}</p>
+            <p className="mt-1 shrink-0 text-xs text-white/45">
+              {t.enterHint}
+            </p>
 
             <button
               onClick={handleSend}
               disabled={loading}
-              className="mt-2 w-full rounded-2xl bg-blue-600 px-5 py-2.5 text-sm font-medium transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+              className="mt-2 w-full shrink-0 rounded-2xl bg-blue-600 px-5 py-2.5 text-sm font-medium transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {loading ? t.sending : t.send}
             </button>
-
-            <div className="mt-3 rounded-2xl border border-white/10 bg-white/5 p-3">
-              <h2 className="mb-2 text-base font-semibold">
-                {t.settingsTitle}
-              </h2>
-
-              <div className="grid gap-3 sm:grid-cols-2">
-                <label className="block text-xs text-white/70">
-                  {t.tone}
-                  <select
-                    value={tone}
-                    onChange={(e) => setTone(e.target.value as Tone)}
-                    className="mt-1 w-full rounded-xl border border-white/10 bg-black/50 p-2 text-sm text-white outline-none focus:border-blue-400/60"
-                  >
-                    <option value="Smiren">{t.toneCalm}</option>
-                    <option value="Motivirajući">{t.toneMotivating}</option>
-                    <option value="Direktan">{t.toneDirect}</option>
-                    <option value="Nježan">{t.toneGentle}</option>
-                  </select>
-                </label>
-
-                <label className="block text-xs text-white/70">
-                  {t.length}
-                  <select
-                    value={answerLength}
-                    onChange={(e) =>
-                      setAnswerLength(e.target.value as AnswerLength)
-                    }
-                    className="mt-1 w-full rounded-xl border border-white/10 bg-black/50 p-2 text-sm text-white outline-none focus:border-blue-400/60"
-                  >
-                    <option value="Kratko">{t.lengthShort}</option>
-                    <option value="Srednje">{t.lengthMedium}</option>
-                    <option value="Dugačko">{t.lengthLong}</option>
-                  </select>
-                </label>
-
-                <label className="block text-xs text-white/70">
-                  {t.format}
-                  <select
-                    value={responseFormat}
-                    onChange={(e) =>
-                      setResponseFormat(e.target.value as ResponseFormat)
-                    }
-                    className="mt-1 w-full rounded-xl border border-white/10 bg-black/50 p-2 text-sm text-white outline-none focus:border-blue-400/60"
-                  >
-                    <option value="Slobodno">{t.formatFree}</option>
-                    <option value="U 3 koraka">{t.formatThreeSteps}</option>
-                    <option value="Kratka vježba">{t.formatExercise}</option>
-                    <option value="Pitanja za refleksiju">
-                      {t.formatReflection}
-                    </option>
-                    <option value="Mini plan">{t.formatMiniPlan}</option>
-                    <option value="Jedan konkretan zadatak">
-                      {t.formatOneTask}
-                    </option>
-                  </select>
-                </label>
-
-                <label className="block text-xs text-white/70">
-                  {t.language}
-                  <select
-                    value={appLanguage}
-                    onChange={(e) =>
-                      setAppLanguage(e.target.value as AppLanguage)
-                    }
-                    className="mt-1 w-full rounded-xl border border-white/10 bg-black/50 p-2 text-sm text-white outline-none focus:border-blue-400/60"
-                  >
-                    <option value="Hrvatski">Hrvatski</option>
-                    <option value="English">English</option>
-                    <option value="Deutsch">Deutsch</option>
-                  </select>
-                </label>
-              </div>
-            </div>
-
-            <div className="mt-3 rounded-2xl border border-white/10 bg-white/5 p-3">
-              <h2 className="mb-2 text-base font-semibold">
-                {t.quickExercises}
-              </h2>
-
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                {t.quickActions.map((action) => (
-                  <button
-                    key={action.label}
-                    onClick={() => setMessage(action.prompt)}
-                    className="rounded-2xl border border-white/10 bg-blue-500/10 p-2 text-left text-xs text-white/85 transition hover:border-blue-300/50 hover:bg-blue-500/20"
-                  >
-                    {action.label}
-                  </button>
-                ))}
-              </div>
-            </div>
           </section>
         </div>
       </div>
