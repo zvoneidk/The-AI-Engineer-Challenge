@@ -49,7 +49,7 @@ const validAppLanguages: AppLanguage[] = ["Hrvatski", "English", "Deutsch"];
 
 const backgroundImages = ["/slika1.jfif", "/slika2.jfif", "/slika3.jpg"];
 
-const backgroundSounds = ["/zvuk1.mp3", "/zvuk2.mp3", "/zvuk3.mp3"];
+const backgroundSounds = ["/zvuk11.mp3", "/zvuk2.mp3", "/zvuk3.mp3"];
 
 const soundVolume = 0.25;
 const crossfadeDurationMs = 5000;
